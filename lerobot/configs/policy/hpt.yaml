@@ -1,0 +1,91 @@
+# @package _global_
+
+# inherited from act.yaml
+seed: 1000
+dataset_repo_id: lerobot/aloha_sim_insertion_human
+
+override_dataset_stats:
+  observation.images.top:
+    # stats from imagenet, since we use a pretrained vision model
+    mean: [[[0.485]], [[0.456]], [[0.406]]]  # (c,1,1)
+    std: [[[0.229]], [[0.224]], [[0.225]]]  # (c,1,1)
+
+training:
+  offline_steps: 100000
+  online_steps: 0
+  eval_freq: 20000
+  save_freq: 20000
+  save_checkpoint: true
+
+  batch_size: 8
+  lr: 1e-5
+  lr_backbone: 1e-5
+  weight_decay: 1e-4
+  grad_clip_norm: 10
+  online_steps_between_rollouts: 1
+
+  delta_timestamps:
+    action: "[i / ${fps} for i in range(${policy.chunk_size})]"
+
+eval:
+  n_episodes: 50
+  batch_size: 50
+
+# See `configuration_act.py` for more details.
+policy:
+  # HPT trunk config
+  network:
+    _target_: hpt_pretrain.models.policy.Policy
+    embed_dim: 128 # transformer model size         
+    num_blocks: 16 # number of blocks in the trunk transformer
+    num_heads: 8 # number of heads in the trunk transformer
+    use_modality_embedding: True # whether to add modality-specific trainable parameters
+    use_domain_embedding: False # whether to add domain-specific trainable parameters  
+    token_postprocessing: "mean" # maxpool or meanpool the tokens
+    weight_init_style: 'pytorch' # weight init
+    drop_path: 0.1 # drop path in the trunk transformer
+    # not thoroughly tested
+    use_gpt_trunk: False # load pre-trained trunk from GPT2
+    use_llama_trunk: False # load pre-trained trunk from LLaMA2
+    hf_trunk: "" # load pre-trained transformer from huggingface
+
+  # stem network (projectors) for different modalities
+  stem:
+    modalities: ['image', 'state'] # 'language'
+    modality_embed_dim: ${network.embed_dim}
+    normalize_state: ${dataset.normalize_state} # normalize state vectors 
+    state_embedding_dim: 1 # dimension of positional encoding for state
+    image_encoder: ${dataset.image_encoder}
+    crossattn_dim_head: 64 # for cross attention modules
+    crossattn_heads: 8 # number of heads in cross attention
+    crossattn_modality_dropout: 0.1 # the dropout ratio for cross attention
+    observation_horizon: ${dataset.observation_horizon} # observation horizon  
+    random_horizon_masking: True # whether to randomize observation input length
+    add_pos_embedding_to_state: False # positional embedding for the state
+    num_blocks: 1 # number of blocks for stem transformer's cross and self attention
+    
+    crossattn_latent:
+      image: 16
+      state: 16
+    
+    image:
+      _target_: hpt_pretrain.models.policy_stem.MLP
+      input_dim: 512 # need modifications based on the vision encoders
+      output_dim: ${network.embed_dim}
+      widths: [128]
+      num_of_copy: 1
+
+    state:
+      _target_: hpt_pretrain.models.policy_stem.MLP
+      input_dim: ${stem.state_embedding_dim} # ovewrite based on the dataset
+      output_dim: ${network.embed_dim}
+      widths: [128]
+
+  # head network
+  head:
+    _target_: hpt_pretrain.models.policy_head.MLP
+    input_dim: ${network.embed_dim}
+    tanh_end: True # normalized action output
+    output_dim: -1 # overwrite based on dataset
+    dropout: True  # add dropout to the head
+    widths: [256, 128]
