@@ -3,6 +3,7 @@
 # inherited from act.yaml
 seed: 1000
 dataset_repo_id: lerobot/aloha_sim_insertion_human
+domain_name: "aloha_sim_insertion_human" # useful for HPT
 
 override_dataset_stats:
   observation.images.top:
@@ -50,14 +51,14 @@ policy:
 
   # HPT trunk config
   network:
-    embed_dim: 128 # transformer model size
+    embed_dim: 256 # transformer model size
     num_blocks: 16 # number of blocks in the trunk transformer
     num_heads: 8 # number of heads in the trunk transformer
     use_modality_embedding: True # whether to add modality-specific trainable parameters
     use_domain_embedding: False # whether to add domain-specific trainable parameters
     token_postprocessing: "mean" # maxpool or meanpool the tokens
     weight_init_style: 'pytorch' # weight init
-    drop_path: 0.1 # drop path in the trunk transformer
+    drop_path: 0.0 # drop path in the trunk transformer
     use_gpt_trunk: False # load pre-trained trunk from GPT2
     use_llama_trunk: False # load pre-trained trunk from LLaMA2
     hf_trunk: "" # load pre-trained transformer from huggingface

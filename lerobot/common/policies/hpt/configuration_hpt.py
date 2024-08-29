@@ -67,12 +67,13 @@ class HPTConfig:
 
     # Architecture.
     # Vision backbone.
+    domain_name: str = "robotics"
     vision_backbone: str = "resnet18"
     pretrained_backbone_weights: str | None = "ResNet18_Weights.IMAGENET1K_V1"
     replace_final_stride_with_dilation: int = False
 
     # Network configuration
-    embed_dim: int = 128  # Transformer model size
+    embed_dim: int = 256  # Transformer model size
     num_blocks: int = 16  # Number of blocks in the trunk transformer
     num_heads: int = 8  # Number of heads in the trunk transformer
     use_modality_embedding: bool = True  # Whether to add modality-specific trainable parameters
