@@ -2,57 +2,54 @@
 
 # inherited from act.yaml
 seed: 1000
-dataset_repo_id: lerobot/aloha_sim_insertion_human
+dataset_repo_id: lerobot/pusht_keypoints
 
-
-override_dataset_stats:
-  observation.images.top:
-    # stats from imagenet, since we use a pretrained vision model
-    mean: [[[0.485]], [[0.456]], [[0.406]]]  # (c,1,1)
-    std: [[[0.229]], [[0.224]], [[0.225]]]  # (c,1,1)
 
 training:
   offline_steps: 100000
   online_steps: 0
-  eval_freq: 10000 # 20000
-  save_freq: 10000 # 20000
+  eval_freq: 20000
+  save_freq: 20000
   save_checkpoint: true
 
-  batch_size: 16
-  lr: 1e-4
+  batch_size: 8
+  lr: 1e-5
+  lr_backbone: 1e-5
+  weight_decay: 1e-4
   grad_clip_norm: 10
   online_steps_between_rollouts: 1
 
   delta_timestamps:
-    action: "[i / ${fps} for i in range(${policy.action_horizon})]"
+    observation.environment_state: "[i / ${fps} for i in range(1 - ${policy.action_horizon}, 1)]"
+    observation.state: "[i / ${fps} for i in range(1 - ${policy.action_horizon}, 1)]"
+    action: "[i / ${fps} for i in range(1 - ${policy.action_horizon}, 1)]"
 
 eval:
-  n_episodes: 50 # 50
-  batch_size: 3 # 50
+  n_episodes: 50
+  batch_size: 50
 
 # See `configuration_act.py` for more details.
 policy:
   name: hpt
-  domain_name: "aloha_sim_insertion_human"
+  domain_name: "pusht_keypoints"
   vision_backbone: "resnet18"
   pretrained_backbone_weights: "ResNet18_Weights.IMAGENET1K_V1"
 
   # Input / output structure.
   input_shapes:
     # TODO(rcadene, alexander-soare): add variables for height and width from the dataset/env?
-    observation.images.top: [3, 96, 96]
+    observation.environment_state: [16]
     observation.state: ["${env.state_dim}"]
   output_shapes:
     action: ["${env.action_dim}"]
 
   # Normalization / Unnormalization
   input_normalization_modes:
-    observation.images.top: mean_std
+    observation.environment_state: min_max
     observation.state: min_max
   output_normalization_modes:
     action: min_max
 
-  # full policy configurations.
   # HPT trunk config
   embed_dim: 256 # transformer model size
   num_blocks: 16 # number of blocks in the trunk transformer
@@ -69,7 +66,7 @@ policy:
   load_pretrained: False # load pre-trained model
 
   # stem network (projectors) for different modalities
-  modalities: ['image', 'state'] # 'language'
+  modalities: ['state'] # 'language'
   modality_embed_dim: "${policy.embed_dim}"
   normalize_state: True # normalize state vectors
   state_embedding_dim: 1 # dimension of positional encoding for state
@@ -81,15 +78,8 @@ policy:
   random_horizon_masking: True # whether to randomize observation input length
   add_pos_embedding_to_state: False # positional embedding for the state
 
-  image_crossattn_latent: 16
   state_crossattn_latent: 16
-
-  vision_input_dim: 512 # need modifications based on the vision encoders
-  vision_output_dim: "${policy.embed_dim}"
-  vision_widths: [128]
-  vision_num_of_copy: 1
-
-  state_input_dim: "${env.state_dim}" # ovewrite based on the dataset
+  state_input_dim: 18 # ovewrite based on the dataset
   state_output_dim: "${policy.embed_dim}"
   state_widths: [128]
   state_num_of_copy: 1
