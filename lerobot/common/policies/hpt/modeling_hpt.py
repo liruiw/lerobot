@@ -24,12 +24,15 @@ from functools import partial
 from itertools import chain
 from typing import Callable, List, Optional
 
+import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F  # noqa: N812
+import torchvision
 from einops import rearrange, repeat
 from huggingface_hub import PyTorchModelHubMixin
 from torch import Tensor, einsum, nn
+from transformers import T5Model, T5Tokenizer
 
 from lerobot.common.policies.hpt.configuration_hpt import HPTConfig
 from lerobot.common.policies.normalize import Normalize, Unnormalize
@@ -95,7 +98,7 @@ class HPTPolicy(
         self.language_embedding = None
 
     @torch.no_grad
-    def select_action(self, batch: dict[str, Tensor]) -> Tensor:
+    def select_action(self, batch: dict[str, Tensor], domain=None) -> Tensor:
         """Select a single action given environment observations.
 
         This method wraps `select_actions` in order to return one action at a time for execution in the
@@ -103,24 +106,82 @@ class HPTPolicy(
         queue is empty.
         """
         self.eval()
-
         batch = self.normalize_inputs(batch)
-        if len(self.expected_image_keys) > 0:
-            batch = dict(batch)  # shallow copy so that adding a key doesn't modify the original
-            batch["observation.images"] = torch.stack([batch[k] for k in self.expected_image_keys], dim=-4)
 
-        # Action queue logic for n_action_steps > 1. When the action_queue is depleted, populate it by
-        # querying the policy.
-        if len(self._action_queue) == 0:
-            actions = self.model(batch)[0][:, : self.config.n_action_steps]
+        def update_history_buffer(key: str, new_obs: torch.Tensor):
+            """Update the history buffer with a new observation.
 
-            # TODO(rcadene): make _forward return output dictionary?
-            actions = self.unnormalize_outputs({"action": actions})["action"]
+            Args:
+                key (str): The key for the observation.
+                new_obs (torch.Tensor): The new observation tensor.
+            """
+            # act like a deque
+            self.history_buffer[key].append(new_obs)
+            if len(self.history_buffer[key]) > self.observation_horizon:
+                self.history_buffer[key].pop(0)
 
-            # `self.model.forward` returns a (batch_size, n_action_steps, action_dim) tensor, but the queue
-            # effectively has shape (n_action_steps, batch_size, *), hence the transpose.
-            self._action_queue.extend(actions.transpose(0, 1))
-        return self._action_queue.popleft()
+        if domain is None:  # default
+            domain = self.domains[0]
+
+        if not hasattr(self, "history_buffer"):
+            print("should call policy reset explicitly to avoid problems for evaluation in sequence.")
+            self.reset()
+
+        action_dim = len(self.normalizer[domain].params_dict["action"]["input_stats"].min)
+        device = next(self.parameters()).device
+
+        if self.openloop_traj_step != self.action_horizon - 1:
+            # use previous predictions in open-loop execution
+            self.openloop_traj_step += 1
+        else:
+            data_noimg = {k: v for k, v in batch.items() if "image" not in k}
+            data_img = {k: v for k, v in batch.items() if "image" in k}
+
+            # append batch and T dimensions
+            data_th = dict_apply(data_noimg, lambda x: torch.FloatTensor(x)[None, None].to(device).float())
+
+            # handle multi-views and history in image
+            img_queue = []
+            for img_key in data_img:
+                if self.stem_spec.precompute_feat and "image" not in self.encoders:
+                    # precomputed
+                    img_embedding = get_resnet_embeddings(batch[img_key], self.stem_spec.image_encoder)
+                    img_queue.append(torch.FloatTensor(img_embedding).to(device).float())
+                else:
+                    # raw inputs
+                    image = normalize_image_numpy(batch[img_key])
+                    img_queue.append(torch.FloatTensor(image).to(device).float())
+            update_history_buffer("image", torch.cat(img_queue, dim=0))  # concat in channel for views
+            data_th["image"] = torch.stack(self.history_buffer["image"], dim=0).float()[None]
+
+            # handle state and language
+            for modality in data_noimg:
+                update_history_buffer(modality, data_th[modality])
+
+                # language is the same for the whole trajectory
+                if "language" in modality:
+                    if "language" in self.modalities:
+                        if self.language_embedding is None:
+                            self.language_embedding = get_t5_embeddings(data_th[modality], per_token=True)
+                        data_th[modality] = self.language_embedding
+                else:
+                    data_th[modality] = torch.cat(self.history_buffer[modality], dim=1).float()
+
+            # handle previous actions
+            if "prev_actions" in self.history_buffer:
+                data_th["prev_actions"] = torch.cat(self.history_buffer["prev_actions"], dim=1).float()
+
+            action_th = self(domain, data_th)  # forward pass
+            self.action_traj = action_th.detach().cpu().numpy()[0]  # batch=1
+            self.action_traj = self.action_traj.reshape(-1, action_dim)  # T x Da
+            self.openloop_traj_step = 0  # reset steps
+
+        # handle previous actions
+        curr_action = self.action_traj[self.openloop_traj_step]
+        update_history_buffer(
+            "prev_actions", torch.FloatTensor(curr_action)[None, None, None].to(device).float()
+        )
+        return curr_action
 
     def forward(self, batch: dict[str, Tensor]) -> dict[str, Tensor]:
         """Run the batch through the model and compute the loss for training or validation."""
@@ -550,6 +611,7 @@ class BlockWithMasking(nn.Module):
         ), "attn_target should be a Callable. Otherwise attn_target is shared across blocks!"
         self.attn = attn_target()
         # if drop_path > 0.0:
+        #     requires timm package
         #     self.drop_path = DropPath(drop_path)
         # else:
         self.drop_path = nn.Identity()
@@ -731,3 +793,160 @@ def get_sinusoid_encoding_table(position_start, position_end, d_hid):
     sinusoid_table[:, 1::2] = np.cos(sinusoid_table[:, 1::2])  # dim 2i+1
 
     return torch.FloatTensor(sinusoid_table).unsqueeze(0)
+
+
+def dict_apply(x, func):
+    """
+    Apply a function to all values in a dictionary recursively.
+
+    Args:
+        x (dict or any): The dictionary or value to apply the function to.
+        func (function): The function to apply.
+
+    Returns:
+        dict or any: The resulting dictionary or value after applying the function.
+    """
+    dict_type = type(x)
+    if type(x) is not dict_type:
+        return func(x)
+
+    result = dict_type()
+    for key, value in x.items():
+        if isinstance(value, dict_type):
+            result[key] = dict_apply(value, func)
+        else:
+            result[key] = func(value)
+    return result
+
+
+def normalize_image_numpy(image: np.ndarray, resize: bool = True) -> np.ndarray:
+    """
+    Normalize an image in numpy format.
+
+    Args:
+        image (numpy.ndarray): The input image in H x W x 3 (uint8) format.
+
+    Returns:
+        numpy.ndarray: The normalized image in 3 x H x W format.
+
+    Notes:
+        - The input image is resized to (224, 224) using cv2.resize.
+        - The image is normalized using the mean and standard deviation values from the ImageNet dataset.
+        - The resulting image is transposed to have dimensions of 3 x H x W.
+    """
+    if resize:
+        image = cv2.resize(image, (224, 224))
+    mean = np.array([0.485, 0.456, 0.406])
+    std = np.array([0.229, 0.224, 0.225])
+    image = image / 255.0
+
+    # convert to array
+    image = np.asarray(image)
+
+    # normalize
+    image = (image - mean) / std
+    return image.transpose(2, 0, 1)
+
+
+@torch.no_grad()
+def get_t5_embeddings(language, per_token=True, max_length=16, device="cpu"):
+    """Get T5 embedding"""
+    global global_language_model, global_language_processor
+    if global_language_model is None:
+        global_language_model = T5Model.from_pretrained("t5-base").to(device)
+        global_language_processor = T5Tokenizer.from_pretrained("t5-base")
+
+    # forward pass through encoder only
+    enc = global_language_processor(
+        [language],
+        return_tensors="pt",
+        padding="max_length",
+        truncation=True,
+        max_length=max_length,
+    ).to(device)
+
+    output = global_language_model.encoder(
+        input_ids=enc["input_ids"], attention_mask=enc["attention_mask"], return_dict=True
+    )
+    torch.cuda.empty_cache()
+    if per_token:
+        return output.last_hidden_state[0].detach().cpu().numpy()
+    else:
+        # get the final hidden states. average across tokens.
+        emb = output.last_hidden_state[0].mean(dim=0).detach().cpu().numpy()
+        return emb
+
+
+@torch.no_grad()
+def get_resnet_embeddings(image, per_token=False, device="cuda", downsample=False):
+    """Get Resnet embedding. Input: H x W x 3"""
+    global global_vision_model
+
+    if global_vision_model is None:
+        global_vision_model = ResNet().to(device)
+    device = global_vision_model.device
+    image = normalize_image_numpy(image)
+    global_vision_model.eval()
+    image_th = torch.FloatTensor(image).to(device)
+    if len(image_th.shape) == 3:
+        image_th = image_th[None]
+
+    # forward pass through encoder only
+    output = global_vision_model.net(image_th)
+    if downsample:  # pool to 3 x 3
+        output = torch.nn.functional.avg_pool2d(output, 2, 2)
+
+    output = output.reshape(output.shape[0], 512, -1).transpose(1, 2)
+    return output.detach().cpu().numpy()
+
+
+class ResNet(PolicyStem):
+    def __init__(
+        self,
+        output_dim: int = 10,
+        weights: str = "DEFAULT",
+        resnet_model: str = "resnet18",
+        num_of_copy: int = 1,
+        **kwargs,
+    ) -> None:
+        """ResNet Encoder for Images"""
+        super().__init__()
+        pretrained_model = getattr(torchvision.models, resnet_model)(weights=weights)
+
+        # by default we use a separate image encoder for each view in downstream evaluation
+        self.num_of_copy = num_of_copy
+        self.net = nn.Sequential(*list(pretrained_model.children())[:-2])
+
+        if num_of_copy > 1:
+            self.net = nn.ModuleList(
+                [nn.Sequential(*list(pretrained_model.children())[:-2]) for _ in range(num_of_copy)]
+            )
+        self.input = input
+        self.out_dim = output_dim
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Performs a forward pass of the model.
+        Args:
+            x: Image tensor with shape [B, T, N, 3, H, W] representing the batch size,
+            horizon, instance (e.g. num of views)
+        Returns:
+            Flatten tensor with shape [B, M, 512]
+        """
+        b, *_, h, w = x.shape
+        x = x.view(len(x), -1, 3, h, w)
+        if self.num_of_copy > 1:
+            # separate encoding for each view
+            out = []
+            iter_num = min(self.num_of_copy, x.shape[1])
+            for idx in range(iter_num):
+                input = x[:, idx]
+                net = self.net[idx]
+                out.append(net(input))
+            feat = torch.stack(out, dim=1)
+        else:
+            x = x.view(-1, 3, h, w)
+            feat = self.net(x)
+        # concat along time
+        feat = feat.reshape(b, -1, feat.shape[-1]).contiguous()
+        return feat
