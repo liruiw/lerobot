@@ -36,7 +36,64 @@ class HPTConfig:
         - "action" is required as an output key.
 
     Args:
-
+        input_shapes: A dictionary defining the shapes of the input data for the policy.
+            The key represents the input data name, and the value is a list indicating the dimensions
+            of the corresponding data. For example, "observation.image" refers to an input from
+            a camera with dimensions [3, 96, 96], indicating it has three color channels and 96x96 resolution.
+            Importantly, shapes don't include batch dimension or temporal dimension.
+        output_shapes: A dictionary defining the shapes of the output data for the policy.
+            The key represents the output data name, and the value is a list indicating the dimensions
+            of the corresponding data. For example, "action" refers to an output shape of [14], indicating
+            14-dimensional actions. Importantly, shapes don't include batch dimension or temporal dimension.
+        input_normalization_modes: A dictionary with key representing the modality (e.g. "observation.state"),
+            and the value specifies the normalization mode to apply. The two available modes are "mean_std"
+            which subtracts the mean and divides by the standard deviation and "min_max" which rescale in a
+            [-1, 1] range.
+        output_normalization_modes: Similar dictionary as `input_normalization_modes`, but to unnormalize to the
+            original scale. Note that this is also used for normalizing the training targets.
+        vision_backbone: Name of the torchvision resnet backbone to use for encoding images.
+        crop_shape: (H, W) shape to crop images to as a preprocessing step for the vision backbone. Must fit
+            within the image size. If None, no cropping is done.
+        crop_is_random: Whether the crop should be random at training time (it's always a center crop in eval
+            mode).
+        embed_dim: Transformer model size.
+        num_blocks: Number of blocks in the trunk transformer.
+        num_heads: Number of heads in the trunk transformer.
+        use_modality_embedding: Whether to add modality-specific trainable parameters.
+        use_domain_embedding: Whether to add domain-specific trainable parameters.
+        token_postprocessing: Method to pool the tokens, either "max" or "mean".
+        weight_init_style: Weight initialization style.
+        drop_path: Drop path in the trunk transformer.
+        use_gpt_trunk: Load pre-trained trunk from GPT2.
+        use_llama_trunk: Load pre-trained trunk from LLaMA2.
+        hf_trunk: Load pre-trained transformer from Hugging Face.
+        modalities: Modalities (e.g., 'image', 'language').
+        modality_embed_dim: Embedding dimension for each modality.
+        normalize_state: Normalize state vectors.
+        state_embedding_dim: Dimension of positional encoding for state.
+        image_encoder: Default image encoder.
+        crossattn_dim_head: Dimension of each head in cross-attention modules.
+        crossattn_heads: Number of heads in cross-attention.
+        crossattn_modality_dropout: Dropout ratio for cross-attention.
+        observation_horizon: Observation horizon.
+        random_horizon_masking: Randomize observation input length.
+        add_pos_embedding_to_state: Positional embedding for the state.
+        stem_num_blocks: Number of blocks for stem transformer's cross and self-attention.
+        crossattn_latent_image: Latent dimension for cross-attention (image).
+        crossattn_latent_state: Latent dimension for cross-attention (state).
+        image_input_dim: Input dimension for the image encoder.
+        image_output_dim: Output dimension for the image encoder.
+        image_widths: Widths of the layers for the image encoder.
+        image_num_of_copy: Number of copies for the image encoder.
+        state_input_dim: Placeholder, should be overwritten based on the environment state dimension.
+        state_output_dim: Output dimension for the state encoder.
+        state_widths: Widths of the layers for the state encoder.
+        head_input_dim: Input dimension for the head network.
+        head_tanh_end: Whether to apply tanh to normalize action output.
+        head_action_dim: Placeholder, should be overwritten based on the environment action dimension.
+        action_horizon: Action horizon, should be overwritten based on the dataset.
+        head_dropout: Add dropout to the head network.
+        head_widths: Widths of the layers for the head network.
     """
 
     # Input / output structure.
@@ -70,54 +127,56 @@ class HPTConfig:
     domain_name: str = "robotics"
     vision_backbone: str = "resnet18"
     pretrained_backbone_weights: str | None = "ResNet18_Weights.IMAGENET1K_V1"
-    replace_final_stride_with_dilation: int = False
 
     # Network configuration
-    embed_dim: int = 256  # Transformer model size
-    num_blocks: int = 16  # Number of blocks in the trunk transformer
-    num_heads: int = 8  # Number of heads in the trunk transformer
-    use_modality_embedding: bool = True  # Whether to add modality-specific trainable parameters
-    use_domain_embedding: bool = False  # Whether to add domain-specific trainable parameters
-    token_postprocessing: str = "mean"  # maxpool or meanpool the tokens
-    weight_init_style: str = "pytorch"  # Weight initialization style
-    drop_path: float = 0.1  # Drop path in the trunk transformer
-    use_gpt_trunk: bool = False  # Load pre-trained trunk from GPT2
-    use_llama_trunk: bool = False  # Load pre-trained trunk from LLaMA2
-    hf_trunk: str = ""  # Load pre-trained transformer from huggingface
+    class Network:
+        # Trunk Transformer
+        embed_dim: int = 256
+        num_blocks: int = 16
+        num_heads: int = 8
+        use_modality_embedding: bool = True
+        use_domain_embedding: bool = False
+        token_postprocessing: str = "mean"
+        weight_init_style: str = "pytorch"
+        drop_path: float = 0.1
+        use_gpt_trunk: bool = False
+        use_llama_trunk: bool = False
+        hf_trunk: str = ""
+        no_trunk: bool = False
 
-    # Stem network (projectors) for different modalities
-    modalities: list = ["image", "state"]  # Modalities (e.g., 'image', 'language')
-    modality_embed_dim: int = embed_dim  # Embedding dimension for each modality
-    normalize_state: bool = True  # Normalize state vectors
-    state_embedding_dim: int = 1  # Dimension of positional encoding for state
-    image_encoder: str = "resnet"  # Default image encoder
-    crossattn_dim_head: int = 64  # Dimension of each head in cross attention modules
-    crossattn_heads: int = 8  # Number of heads in cross attention
-    crossattn_modality_dropout: float = 0.1  # Dropout ratio for cross attention
-    observation_horizon: int = 2  # Observation horizon
-    random_horizon_masking: bool = True  # Randomize observation input length
-    add_pos_embedding_to_state: bool = False  # Positional embedding for the state
-    stem_num_blocks: int = 1  # Number of blocks for stem transformer's cross and self attention
+        # Stem network (projectors) for different modalities
+        modalities: tuple = ("image", "state")
+        modality_embed_dim: int = 256
+        normalize_state: bool = True
+        state_embedding_dim: int = 1
+        image_encoder: str = "resnet"
+        crossattn_dim_head: int = 64
+        crossattn_heads: int = 8
+        crossattn_modality_dropout: float = 0.1
+        observation_horizon: int = 2
+        random_horizon_masking: bool = True
+        add_pos_embedding_to_state: bool = False
 
-    crossattn_latent_image: int = 16  # Latent dimension for cross attention (image)
-    crossattn_latent_state: int = 16  # Latent dimension for cross attention (state)
+        image_crossattn_latent: int = 16
+        state_crossattn_latent: int = 16
 
-    image_input_dim: int = 512  # Input dimension for the image encoder
-    image_output_dim: int = embed_dim  # Output dimension for the image encoder
-    image_widths: list = [128]  # Widths of the layers for the image encoder
-    image_num_of_copy: int = 1  # Number of copies for the image encoder
+        image_input_dim: int = 512
+        image_output_dim: int = 256
+        image_widths: tuple = (128,)
+        image_num_of_copy: int = 1
 
-    state_input_dim: int = 0  # Placeholder, should be overwritten based on the environment state dimension
-    state_output_dim: int = embed_dim  # Output dimension for the state encoder
-    state_widths: list = [128]  # Widths of the layers for the state encoder
+        state_input_dim: int = 14
+        state_output_dim: int = 256
+        state_widths: tuple = (128,)
+        state_num_of_copy: int = 1
 
-    # Head network
-    head_input_dim: int = embed_dim  # Input dimension for the head network
-    tanh_end: bool = True  # Whether to apply tanh to normalize action output
-    action_dim: int = 0  # Placeholder, should be overwritten based on the environment action dimension
-    action_horizon: int = 4  # Action horizon, should be overwritten based on the dataset
-    dropout: bool = True  # Add dropout to the head network
-    head_widths: list = [256, 128]  # Widths of the layers for the head network
+        # Head network
+        head_input_dim: int = 256
+        head_tanh_end: bool = True
+        head_action_dim: int = 14
+        action_horizon: int = 4
+        head_dropout: bool = True
+        head_widths: tuple = (256, 128)
 
     def __post_init__(self):
         """Input validation (not exhaustive)."""
