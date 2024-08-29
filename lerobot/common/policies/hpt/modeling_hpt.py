@@ -21,10 +21,8 @@ The majority of changes here involve removing unused code, unifying naming, and 
 
 from collections import defaultdict
 from functools import partial
-from itertools import chain
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
-import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F  # noqa: N812
@@ -32,7 +30,6 @@ import torchvision
 from einops import rearrange, repeat
 from huggingface_hub import PyTorchModelHubMixin
 from torch import Tensor, einsum, nn
-from transformers import T5Model, T5Tokenizer
 
 from lerobot.common.policies.hpt.configuration_hpt import HPTConfig
 from lerobot.common.policies.normalize import Normalize, Unnormalize
@@ -95,7 +92,7 @@ class HPTPolicy(
         self.history_buffer = defaultdict(list)
 
         # current steps in open-loop rollouts
-        self.openloop_traj_step = self.config.action_horizon - 1
+        self.openloop_traj_step = self.config.Network.action_horizon - 1
         self.language_embedding = None
 
     @torch.no_grad
@@ -108,6 +105,8 @@ class HPTPolicy(
         """
         self.eval()
         batch = self.normalize_inputs(batch)
+        if domain is None:  # default
+            domain = self.domains[0]
 
         def update_history_buffer(key: str, new_obs: torch.Tensor):
             """Update the history buffer with a new observation.
@@ -121,67 +120,28 @@ class HPTPolicy(
             if len(self.history_buffer[key]) > self.observation_horizon:
                 self.history_buffer[key].pop(0)
 
-        if domain is None:  # default
-            domain = self.domains[0]
-
         if not hasattr(self, "history_buffer"):
             print("should call policy reset explicitly to avoid problems for evaluation in sequence.")
             self.reset()
 
-        device = next(self.parameters()).device
-
-        if self.openloop_traj_step != self.config.action_horizon - 1:
+        if self.openloop_traj_step != self.config.netwaction_horizon - 1:
             # use previous predictions in open-loop execution
             self.openloop_traj_step += 1
         else:
-            data_noimg = {k: v for k, v in batch.items() if "image" not in k}
-            data_img = {k: v for k, v in batch.items() if "image" in k}
-
-            # append batch and T dimensions
-            data_th = dict_apply(data_noimg, lambda x: torch.FloatTensor(x)[None, None].to(device).float())
-
-            # handle multi-views and history in image
-            img_queue = []
-            for img_key in data_img:
-                if self.stem_spec.precompute_feat and "image" not in self.encoders:
-                    # precomputed
-                    img_embedding = get_resnet_embeddings(batch[img_key], self.stem_spec.image_encoder)
-                    img_queue.append(torch.FloatTensor(img_embedding).to(device).float())
-                else:
-                    # raw inputs
-                    # image = normalize_image_numpy(batch[img_key])
-                    img_queue.append(torch.FloatTensor(batch[img_key]).to(device).float())
-            update_history_buffer("image", torch.cat(img_queue, dim=0))  # concat in channel for views
-            data_th["image"] = torch.stack(self.history_buffer["image"], dim=0).float()[None]
+            batch_with_history = {}
 
             # handle state and language
-            for modality in data_noimg:
-                update_history_buffer(modality, data_th[modality])
+            for modality, data in batch.items():
+                update_history_buffer(modality, data)
+                batch_with_history[modality] = torch.cat(self.history_buffer[modality], dim=1).float()
 
-                # language is the same for the whole trajectory
-                if "language" in modality:
-                    if "language" in self.modalities:
-                        if self.language_embedding is None:
-                            self.language_embedding = get_t5_embeddings(data_th[modality], per_token=True)
-                        data_th[modality] = self.language_embedding
-                else:
-                    data_th[modality] = torch.cat(self.history_buffer[modality], dim=1).float()
-
-            # handle previous actions
-            if "prev_actions" in self.history_buffer:
-                data_th["prev_actions"] = torch.cat(self.history_buffer["prev_actions"], dim=1).float()
-
-            action_th = self.model(domain, data_th)  # forward pass to generate action
+            action_th = self.model(domain, batch_with_history)  # forward pass to generate action
             action_th = self.unnormalize_outputs({"action": action_th})["action"]
             self.action_traj = action_th.detach().cpu().numpy()[0]  # batch=1
-            self.action_traj = self.action_traj.reshape(-1, self.config.action_dim)  # T x Da
+            self.action_traj = self.action_traj.reshape(-1, self.config.head.action_dim)  # T x Da
             self.openloop_traj_step = 0  # reset steps
 
-        # handle previous actions
         curr_action = self.action_traj[self.openloop_traj_step]
-        update_history_buffer(
-            "prev_actions", torch.FloatTensor(curr_action)[None, None, None].to(device).float()
-        )
         return curr_action
 
     def forward(self, batch: dict[str, Tensor]) -> dict[str, Tensor]:
@@ -235,12 +195,11 @@ class HPT(nn.Module):
         self.use_robot_state = "observation.state" in config.input_shapes
         self.use_images = any(k.startswith("observation.image") for k in config.input_shapes)
         self.use_env_state = "observation.environment_state" in config.input_shapes
-        self.embed_dim = config.network.embed_dim
-        self.shared_modality_trunk = config.network.shared_modality_trunk
-        self.no_trunk = config.network.no_trunk
+        self.embed_dim = config.Network.embed_dim
+        self.no_trunk = config.Network.no_trunk
 
         self.trunk = self._create_policy_trunk(
-            config.network.embed_dim, config.network.num_blocks, config.network.num_heads
+            config.Network.embed_dim, config.Network.num_blocks, config.Network.num_heads
         )
         self.stems = {}
         self.heads = {}
@@ -248,19 +207,32 @@ class HPT(nn.Module):
         # self.normalizer = {}
         self.encoders = {}
         self.domains = []
-        self.use_modality_embedding = config.network.use_modality_embedding
-        self.observation_horizon = config.network.observation_horizon
-        self.action_horizon = config.network.action_horizon
-        self.token_postprocessing = config.network.token_postprocessing
-        self.use_domain_embedding = config.network.use_domain_embedding
+        self.use_modality_embedding = config.Network.use_modality_embedding
+        self.observation_horizon = config.Network.observation_horizon
+        self.action_horizon = config.Network.action_horizon
+        self.token_postprocessing = config.Network.token_postprocessing
+        self.use_domain_embedding = config.Network.use_domain_embedding
         self.modalities_tokens = {}
         self.domains_tokens = {}
         self.action_tokens = {}
 
-        # initialize modules
+        # initialize modules.
+        self.init_encoders("image", ResNet())
         self.init_domain_stem(self.config.domain_name)
         self.init_domain_head(self.config.domain_name)
         self.finalize_modules()
+
+    def _init_weights(self, m):
+        """
+        Weight initialization for transformer
+        """
+        if isinstance(m, nn.Linear):
+            torch.nn.init.xavier_uniform_(m.weight)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
 
     def init_encoders(self, modality, encoder):
         """
@@ -273,10 +245,16 @@ class HPT(nn.Module):
         """
         Initialize an observation stem for each domain
         """
-        self.stem_spec = self.config.stem
+        self.stem_spec = self.config.network
         self.modalities = self.stem_spec.modalities
         for modality in self.modalities:
-            self.stems[domain_name + "_" + modality] = MLPStem(self.stem_spec)
+            self.stems[domain_name + "_" + modality] = MLPStem(
+                input_dim=getattr(self.stem_spec, modality + "_input_dim"),
+                output_dim=getattr(self.stem_spec, modality + "_output_dim"),
+                widths=getattr(self.stem_spec, modality + "_widths"),
+                num_of_copy=getattr(self.stem_spec, modality + "_num_of_copy"),
+            )
+
             self.stems[domain_name + "_" + modality].init_cross_attn(self.stem_spec, modality)
             self.modalities_tokens[modality] = nn.Parameter(
                 torch.randn(1, 1, self.stem_spec.modality_embed_dim) * INIT_CONST
@@ -289,14 +267,14 @@ class HPT(nn.Module):
 
     def init_domain_head(self, domain_name):
         """initialize an action head for each domain, along with normalizer"""
-        self.head_spec = self.config.head
+        self.head_spec = self.config.network
+        self.action_horizon = self.head_spec.action_horizon
         self.domains.append(domain_name)
-        self.heads[domain_name] = MLP(self.embed_dim, self.head_spec)
-        # handled by LeRobot
-        # self.normalizer[domain_name] = LinearNormalizer()
-
-        # if normalizer is not None:
-        #     self.normalizer[domain_name].load_state_dict(normalizer.state_dict())
+        self.heads[domain_name] = MLP(
+            input_dim=self.head_spec.head_input_dim,
+            output_dim=self.head_spec.head_action_dim * self.head_spec.action_horizon,
+            widths=self.head_spec.head_widths,
+        )
 
     def finalize_modules(self):
         """
@@ -308,7 +286,7 @@ class HPT(nn.Module):
         """
         self.stems = nn.ModuleDict(self.stems)
         self.heads = nn.ModuleDict(self.heads)
-        # self.normalizer = nn.ModuleDict(self.normalizer)
+
         self.modalities_tokens = nn.ParameterDict(self.modalities_tokens)
         self.domains_tokens = nn.ParameterDict(self.domains_tokens)
 
@@ -361,9 +339,7 @@ class HPT(nn.Module):
 
     def _reset_parameters(self):
         """Xavier-uniform initialization of the transformer parameters as in the original code."""
-        for p in chain(self.parameters()):
-            if p.dim() > 1:
-                torch.nn.init.trunc_normal_(p)
+        self.apply(self._init_weights)
 
     def forward(
         self, batch: dict[str, Tensor], domain=""
@@ -403,6 +379,7 @@ class HPT(nn.Module):
         Shared modality layers and add modality tokens. Add positional and time embeddings.
         """
         processed_features = []
+
         for modality, feature in zip(self.modalities, features, strict=False):
             modality_embedding = self.modalities_tokens[modality].repeat(
                 (feature.shape[0], feature.shape[1], 1)
@@ -462,6 +439,13 @@ class HPT(nn.Module):
         elif self.token_postprocessing == "last":
             return trunk_tokens[:, -1]
 
+    def mapped_modality_keys(self, modality: str, data: dict[str, Tensor]) -> bool:
+        """Returns the corresponding the modality keys."""
+        for k in data:
+            if modality in k:
+                return k
+        return None
+
     def stem_process(self, domain: str, data: dict):
         """
         Pass through the stem to a fixed number of tokens.
@@ -469,11 +453,18 @@ class HPT(nn.Module):
             data: dictionary of tensors of different modalities
         """
         feats = []
-        for modality in self.modalities:
-            stem = self.stems[domain + "_" + modality]
 
-            if modality not in data:
+        for policy_modality in self.modalities:
+            stem = self.stems[domain + "_" + policy_modality]
+            modality = self.mapped_modality_keys(policy_modality, data)
+
+            if not modality:
+                print("skip modality", modality)
                 continue
+
+            # if len(data[modality].shape) == 4:
+            # add time horizon and instance number
+            data[modality] = data[modality][:, None, None]
 
             if "image" in modality and "image" in self.encoders:  # finetuning with encoders
                 data[modality] = self.encoders["image"](data[modality])
@@ -494,9 +485,11 @@ class HPT(nn.Module):
             positional_embedding = repeat(
                 positional_embedding, "b h w -> (repeat b) h w", repeat=data_shape[0]
             )
+
             data[modality] = data[modality] + positional_embedding.view(data[modality].shape)
             stem_token = stem.compute_latent(data[modality])
             feats.append(stem_token)
+            # we should make sure the state goes first and then the image
 
         return feats
 
@@ -553,7 +546,7 @@ class HPT(nn.Module):
             self.trunk.load_state_dict(torch.load(path, map_location="cpu"), strict=True)
 
 
-class MLP:
+class MLP(nn.Module):
     """Simple MLP based policy head"""
 
     def __init__(
@@ -602,7 +595,7 @@ class PolicyStem(nn.Module):
 
     def init_cross_attn(self, stem_spec, modality: str):
         """initialize cross attention module and the learnable tokens"""
-        token_num = getattr(stem_spec.crossattn_latent, modality)
+        token_num = getattr(stem_spec, modality + "_crossattn_latent")
         self.tokens = nn.Parameter(torch.randn(1, token_num, stem_spec.modality_embed_dim) * INIT_CONST)
 
         self.cross_attention = CrossAttention(
@@ -655,7 +648,7 @@ class MLPStem(PolicyStem):
         self,
         input_dim: int = 10,
         output_dim: int = 10,
-        widths: List[int] = (512, 512),
+        widths: Tuple[int] = (512, 512),
         tanh_end: bool = False,
         ln: bool = True,
         num_of_copy: int = 1,
@@ -663,6 +656,7 @@ class MLPStem(PolicyStem):
     ) -> None:
         """vanilla MLP class"""
         super().__init__()
+        print("widths: ", widths, input_dim)
         modules = [nn.Linear(input_dim, widths[0]), nn.SiLU()]
 
         for i in range(len(widths) - 1):
@@ -1002,106 +996,6 @@ def get_sinusoid_encoding_table(position_start, position_end, d_hid):
     return torch.FloatTensor(sinusoid_table).unsqueeze(0)
 
 
-def dict_apply(x, func):
-    """
-    Apply a function to all values in a dictionary recursively.
-
-    Args:
-        x (dict or any): The dictionary or value to apply the function to.
-        func (function): The function to apply.
-
-    Returns:
-        dict or any: The resulting dictionary or value after applying the function.
-    """
-    dict_type = type(x)
-    if type(x) is not dict_type:
-        return func(x)
-
-    result = dict_type()
-    for key, value in x.items():
-        if isinstance(value, dict_type):
-            result[key] = dict_apply(value, func)
-        else:
-            result[key] = func(value)
-    return result
-
-
-def normalize_image_numpy(image: np.ndarray, resize: bool = True) -> np.ndarray:
-    """
-    Normalize an image in numpy format.
-
-    Args:
-        image (numpy.ndarray): The input image in H x W x 3 (uint8) format.
-
-    Returns:
-        numpy.ndarray: The normalized image in 3 x H x W format.
-    """
-    if resize:
-        image = cv2.resize(image, (224, 224))
-    mean = np.array([0.485, 0.456, 0.406])
-    std = np.array([0.229, 0.224, 0.225])
-    image = image / 255.0
-
-    # convert to array
-    image = np.asarray(image)
-
-    # normalize
-    image = (image - mean) / std
-    return image.transpose(2, 0, 1)
-
-
-@torch.no_grad()
-def get_t5_embeddings(language, per_token=True, max_length=16, device="cpu"):
-    """Get T5 embedding"""
-    global global_language_model, global_language_processor
-    if global_language_model is None:
-        global_language_model = T5Model.from_pretrained("t5-base").to(device)
-        global_language_processor = T5Tokenizer.from_pretrained("t5-base")
-
-    # forward pass through encoder only
-    enc = global_language_processor(
-        [language],
-        return_tensors="pt",
-        padding="max_length",
-        truncation=True,
-        max_length=max_length,
-    ).to(device)
-
-    output = global_language_model.encoder(
-        input_ids=enc["input_ids"], attention_mask=enc["attention_mask"], return_dict=True
-    )
-    torch.cuda.empty_cache()
-    if per_token:
-        return output.last_hidden_state[0].detach().cpu().numpy()
-    else:
-        # get the final hidden states. average across tokens.
-        emb = output.last_hidden_state[0].mean(dim=0).detach().cpu().numpy()
-        return emb
-
-
-@torch.no_grad()
-def get_resnet_embeddings(image, per_token=False, device="cuda", downsample=False):
-    """Get Resnet embedding. Input: H x W x 3"""
-    global global_vision_model
-
-    if global_vision_model is None:
-        global_vision_model = ResNet().to(device)
-    device = global_vision_model.device
-    image = normalize_image_numpy(image)
-    global_vision_model.eval()
-    image_th = torch.FloatTensor(image).to(device)
-    if len(image_th.shape) == 3:
-        image_th = image_th[None]
-
-    # forward pass through encoder only
-    output = global_vision_model.net(image_th)
-    if downsample:  # pool to 3 x 3
-        output = torch.nn.functional.avg_pool2d(output, 2, 2)
-
-    output = output.reshape(output.shape[0], 512, -1).transpose(1, 2)
-    return output.detach().cpu().numpy()
-
-
 class ResNet(PolicyStem):
     def __init__(
         self,
@@ -1133,7 +1027,7 @@ class ResNet(PolicyStem):
         b, *_, h, w = x.shape
         x = x.view(len(x), -1, 3, h, w)
         x = x.view(-1, 3, h, w)
-        feat = self.net(x)
-        # concat along time
-        feat = feat.reshape(b, -1, feat.shape[-1]).contiguous()
+        # fixed image size
+        x = torch.nn.functional.interpolate(x, size=(224, 224), mode="bilinear", align_corners=False)
+        feat = self.net(x).view(b, 512, -1).transpose(1, 2).contiguous()
         return feat

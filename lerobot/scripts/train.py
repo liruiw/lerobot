@@ -98,6 +98,9 @@ def make_optimizer_and_scheduler(cfg, policy):
 
         optimizer = VQBeTOptimizer(policy, cfg)
         lr_scheduler = VQBeTScheduler(optimizer, cfg)
+    elif policy.name == "hpt":
+        optimizer = torch.optim.AdamW(policy.parameters(), cfg.training.lr)
+        lr_scheduler = None
     else:
         raise NotImplementedError()
 
