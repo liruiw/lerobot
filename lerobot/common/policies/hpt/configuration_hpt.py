@@ -129,63 +129,58 @@ class HPTConfig:
     pretrained_backbone_weights: str | None = "ResNet18_Weights.IMAGENET1K_V1"
 
     # Network configuration
-    class Network:
-        # Trunk Transformer
-        embed_dim: int = 256
-        num_blocks: int = 16
-        num_heads: int = 8
-        use_modality_embedding: bool = True
-        use_domain_embedding: bool = False
-        token_postprocessing: str = "mean"
-        weight_init_style: str = "pytorch"
-        drop_path: float = 0.1
-        use_gpt_trunk: bool = False
-        use_llama_trunk: bool = False
-        hf_trunk: str = ""
-        no_trunk: bool = False
+    # Trunk Transformer
+    embed_dim: int = 256
+    num_blocks: int = 16
+    num_heads: int = 8
+    use_modality_embedding: bool = True
+    use_domain_embedding: bool = False
+    token_postprocessing: str = "mean"
+    weight_init_style: str = "pytorch"
+    drop_path: float = 0.1
+    use_gpt_trunk: bool = False
+    use_llama_trunk: bool = False
+    hf_trunk: str = ""
+    no_trunk: bool = False
+    load_pretrained: bool = False
 
-        # Stem network (projectors) for different modalities
-        modalities: tuple = ("image", "state")
-        modality_embed_dim: int = 256
-        normalize_state: bool = True
-        state_embedding_dim: int = 1
-        image_encoder: str = "resnet"
-        crossattn_dim_head: int = 64
-        crossattn_heads: int = 8
-        crossattn_modality_dropout: float = 0.1
-        observation_horizon: int = 2
-        random_horizon_masking: bool = True
-        add_pos_embedding_to_state: bool = False
+    # Stem network (projectors) for different modalities
+    modalities: tuple = ("image", "state")
+    modality_embed_dim: int = 256
+    normalize_state: bool = True
+    state_embedding_dim: int = 1
+    image_encoder: str = "resnet"
+    crossattn_dim_head: int = 64
+    crossattn_heads: int = 8
+    crossattn_modality_dropout: float = 0.1
+    observation_horizon: int = 2
+    random_horizon_masking: bool = True
+    add_pos_embedding_to_state: bool = False
 
-        image_crossattn_latent: int = 16
-        state_crossattn_latent: int = 16
+    # cross attention tokens
+    image_crossattn_latent: int = 16
+    state_crossattn_latent: int = 16
 
-        image_input_dim: int = 512
-        image_output_dim: int = 256
-        image_widths: tuple = (128,)
-        image_num_of_copy: int = 1
+    # modality: image
+    image_input_dim: int = 512
+    image_output_dim: int = 256
+    image_widths: tuple = (128,)
+    image_num_of_copy: int = 1
 
-        state_input_dim: int = 14
-        state_output_dim: int = 256
-        state_widths: tuple = (128,)
-        state_num_of_copy: int = 1
+    # modality: state
+    state_input_dim: int = 14
+    state_output_dim: int = 256
+    state_widths: tuple = (128,)
+    state_num_of_copy: int = 1
 
-        # Head network
-        head_input_dim: int = 256
-        head_tanh_end: bool = True
-        head_action_dim: int = 14
-        action_horizon: int = 4
-        head_dropout: bool = True
-        head_widths: tuple = (256, 128)
+    # Head network
+    head_input_dim: int = 256
+    head_tanh_end: bool = True
+    head_action_dim: int = 14
+    action_horizon: int = 4
+    head_dropout: bool = True
+    head_widths: tuple = (256, 128)
 
     def __post_init__(self):
         """Input validation (not exhaustive)."""
-        if not self.vision_backbone.startswith("resnet"):
-            raise ValueError(
-                f"`vision_backbone` must be one of the ResNet variants. Got {self.vision_backbone}."
-            )
-        if (
-            not any(k.startswith("observation.image") for k in self.input_shapes)
-            and "observation.environment_state" not in self.input_shapes
-        ):
-            raise ValueError("You must provide at least one image or the environment state among the inputs.")
+        pass

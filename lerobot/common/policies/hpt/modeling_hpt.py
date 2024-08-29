@@ -19,7 +19,7 @@ As per Scaling Proprioceptive-Visual Learning with Heterogeneous Pre-trained Tra
 The majority of changes here involve removing unused code, unifying naming, and adding helpful comments.
 """
 
-from collections import defaultdict
+from collections import defaultdict, deque
 from functools import partial
 from typing import Callable, List, Optional, Tuple
 
@@ -89,10 +89,10 @@ class HPTPolicy(
 
     def reset(self):
         """This should be called whenever the environment is reset."""
-        self.history_buffer = defaultdict(list)
+        self.history_buffer = defaultdict(deque, maxlen=self.model.observation_horizon)
 
         # current steps in open-loop rollouts
-        self.openloop_traj_step = self.config.Network.action_horizon - 1
+        self.openloop_traj_step = self.config.action_horizon - 1
         self.language_embedding = None
 
     @torch.no_grad
@@ -105,26 +105,15 @@ class HPTPolicy(
         """
         self.eval()
         batch = self.normalize_inputs(batch)
+
         if domain is None:  # default
-            domain = self.domains[0]
-
-        def update_history_buffer(key: str, new_obs: torch.Tensor):
-            """Update the history buffer with a new observation.
-
-            Args:
-                key (str): The key for the observation.
-                new_obs (torch.Tensor): The new observation tensor.
-            """
-            # act like a deque
-            self.history_buffer[key].append(new_obs)
-            if len(self.history_buffer[key]) > self.observation_horizon:
-                self.history_buffer[key].pop(0)
+            domain = self.config.domain_name
 
         if not hasattr(self, "history_buffer"):
             print("should call policy reset explicitly to avoid problems for evaluation in sequence.")
             self.reset()
 
-        if self.openloop_traj_step != self.config.netwaction_horizon - 1:
+        if self.openloop_traj_step != self.config.action_horizon - 1:
             # use previous predictions in open-loop execution
             self.openloop_traj_step += 1
         else:
@@ -132,16 +121,19 @@ class HPTPolicy(
 
             # handle state and language
             for modality, data in batch.items():
-                update_history_buffer(modality, data)
-                batch_with_history[modality] = torch.cat(self.history_buffer[modality], dim=1).float()
+                self.history_buffer[modality].append(data)
+                batch_with_history[modality] = torch.stack(list(self.history_buffer[modality]), dim=1).float()
 
-            action_th = self.model(domain, batch_with_history)  # forward pass to generate action
-            action_th = self.unnormalize_outputs({"action": action_th})["action"]
-            self.action_traj = action_th.detach().cpu().numpy()[0]  # batch=1
-            self.action_traj = self.action_traj.reshape(-1, self.config.head.action_dim)  # T x Da
+            action_th = self.model(batch_with_history, domain)  # forward pass to generate action
+            self.action_traj = action_th  # batch=1
+            self.action_traj = self.action_traj.reshape(
+                len(action_th), -1, self.config.head_action_dim
+            )  # B x T x Da
             self.openloop_traj_step = 0  # reset steps
 
-        curr_action = self.action_traj[self.openloop_traj_step]
+        # import IPython; IPython.embed()
+        curr_action = self.action_traj[:, self.openloop_traj_step]
+        curr_action = self.unnormalize_outputs({"action": curr_action})["action"]
         return curr_action
 
     def forward(self, batch: dict[str, Tensor]) -> dict[str, Tensor]:
@@ -195,23 +187,21 @@ class HPT(nn.Module):
         self.use_robot_state = "observation.state" in config.input_shapes
         self.use_images = any(k.startswith("observation.image") for k in config.input_shapes)
         self.use_env_state = "observation.environment_state" in config.input_shapes
-        self.embed_dim = config.Network.embed_dim
-        self.no_trunk = config.Network.no_trunk
+        self.embed_dim = config.embed_dim
+        self.no_trunk = config.no_trunk
 
-        self.trunk = self._create_policy_trunk(
-            config.Network.embed_dim, config.Network.num_blocks, config.Network.num_heads
-        )
+        self.trunk = self._create_policy_trunk(config.embed_dim, config.num_blocks, config.num_heads)
         self.stems = {}
         self.heads = {}
 
         # self.normalizer = {}
         self.encoders = {}
         self.domains = []
-        self.use_modality_embedding = config.Network.use_modality_embedding
-        self.observation_horizon = config.Network.observation_horizon
-        self.action_horizon = config.Network.action_horizon
-        self.token_postprocessing = config.Network.token_postprocessing
-        self.use_domain_embedding = config.Network.use_domain_embedding
+        self.use_modality_embedding = config.use_modality_embedding
+        self.observation_horizon = config.observation_horizon
+        self.action_horizon = config.action_horizon
+        self.token_postprocessing = config.token_postprocessing
+        self.use_domain_embedding = config.use_domain_embedding
         self.modalities_tokens = {}
         self.domains_tokens = {}
         self.action_tokens = {}
@@ -245,19 +235,19 @@ class HPT(nn.Module):
         """
         Initialize an observation stem for each domain
         """
-        self.stem_spec = self.config.network
-        self.modalities = self.stem_spec.modalities
+        self.stem_spec = self.config
+        self.modalities = self.config.modalities
         for modality in self.modalities:
             self.stems[domain_name + "_" + modality] = MLPStem(
-                input_dim=getattr(self.stem_spec, modality + "_input_dim"),
-                output_dim=getattr(self.stem_spec, modality + "_output_dim"),
-                widths=getattr(self.stem_spec, modality + "_widths"),
-                num_of_copy=getattr(self.stem_spec, modality + "_num_of_copy"),
+                input_dim=getattr(self.config, modality + "_input_dim"),
+                output_dim=getattr(self.config, modality + "_output_dim"),
+                widths=getattr(self.config, modality + "_widths"),
+                num_of_copy=getattr(self.config, modality + "_num_of_copy"),
             )
 
-            self.stems[domain_name + "_" + modality].init_cross_attn(self.stem_spec, modality)
+            self.stems[domain_name + "_" + modality].init_cross_attn(self.config, modality)
             self.modalities_tokens[modality] = nn.Parameter(
-                torch.randn(1, 1, self.stem_spec.modality_embed_dim) * INIT_CONST
+                torch.randn(1, 1, self.config.modality_embed_dim) * INIT_CONST
             )
         self.domains_tokens[domain_name] = nn.Parameter(torch.randn(1, 1, self.embed_dim) * INIT_CONST)
         if self.token_postprocessing == "action_token":
@@ -267,13 +257,13 @@ class HPT(nn.Module):
 
     def init_domain_head(self, domain_name):
         """initialize an action head for each domain, along with normalizer"""
-        self.head_spec = self.config.network
-        self.action_horizon = self.head_spec.action_horizon
+        self.head_spec = self.config
+        self.action_horizon = self.config.action_horizon
         self.domains.append(domain_name)
         self.heads[domain_name] = MLP(
-            input_dim=self.head_spec.head_input_dim,
-            output_dim=self.head_spec.head_action_dim * self.head_spec.action_horizon,
-            widths=self.head_spec.head_widths,
+            input_dim=self.config.head_input_dim,
+            output_dim=self.config.head_action_dim * self.config.action_horizon,
+            widths=self.config.head_widths,
         )
 
     def finalize_modules(self):
@@ -342,7 +332,7 @@ class HPT(nn.Module):
         self.apply(self._init_weights)
 
     def forward(
-        self, batch: dict[str, Tensor], domain=""
+        self, batch: dict[str, Tensor], domain: str = ""
     ) -> tuple[Tensor, tuple[Tensor, Tensor] | tuple[None, None]]:
         """A forward pass through the HPT to generate actions at test time
 
@@ -363,15 +353,14 @@ class HPT(nn.Module):
             latent dimension.
         """
         if len(domain) == 0:
-            domain = self.config.domain_nam
+            domain = self.config.domain_name
+
         self.train_mode = False  # for random horizon masking
         features = self.forward_features(domain, batch)
 
         # head pass
         action = self.heads[domain](features)
 
-        # postprocess. unnormalize the outputs
-        # action = self.postprocess_actions(domain, action)
         return action
 
     def preprocess_tokens(self, domain: str, features: List[torch.Tensor]) -> torch.Tensor:
@@ -440,11 +429,39 @@ class HPT(nn.Module):
             return trunk_tokens[:, -1]
 
     def mapped_modality_keys(self, modality: str, data: dict[str, Tensor]) -> bool:
-        """Returns the corresponding the modality keys."""
+        """Select the data for the given modality"""
+        selected_keys = []
+        selected_data = []
+
         for k in data:
             if modality in k:
-                return k
-        return None
+                if modality == "state" and "is_pad" in k:
+                    continue
+                if modality == "image" and len(data[k].shape) == 4:
+                    continue
+                selected_keys.append(k)
+                selected_data.append(data[k])
+
+        if len(selected_keys) == 0:
+            raise ValueError(f"{modality=} not found in data keys")
+
+        if modality == "image":
+            data = torch.cat(selected_data, dim=-4)
+            if len(data.shape) == 5:
+                data = data[:, None]  # time dimension
+
+        if modality == "state":
+            data = torch.cat(selected_data, dim=-1)
+
+            if len(data.shape) == 2:
+                # time and instance dimension
+                data = data[:, None, None]
+
+            elif len(data.shape) == 3:
+                # time dimension
+                data = data[:, None]
+
+        return modality, data
 
     def stem_process(self, domain: str, data: dict):
         """
@@ -456,40 +473,32 @@ class HPT(nn.Module):
 
         for policy_modality in self.modalities:
             stem = self.stems[domain + "_" + policy_modality]
-            modality = self.mapped_modality_keys(policy_modality, data)
+            modality, modality_data = self.mapped_modality_keys(policy_modality, data)
 
-            if not modality:
-                print("skip modality", modality)
-                continue
-
-            # if len(data[modality].shape) == 4:
             # add time horizon and instance number
-            data[modality] = data[modality][:, None, None]
-
             if "image" in modality and "image" in self.encoders:  # finetuning with encoders
-                data[modality] = self.encoders["image"](data[modality])
+                modality_data = self.encoders["image"](modality_data)
 
             # positional embedding for observations
-            data_shape = data[modality].shape
+            data_shape = modality_data.shape
             data_horizon = data_shape[1]
             horizon = data_horizon
 
             if self.train_mode and self.stem_spec.random_horizon_masking and data_horizon > 1:
                 horizon = np.random.randint(1, data_horizon + 1)
-                data[modality] = data[modality][:, data_horizon - horizon : data_horizon]
+                modality_data = modality_data[:, data_horizon - horizon : data_horizon]
 
             # data is N x T x M x ... x D where M is the # of instances for that sensor
             positional_embedding = get_sinusoid_encoding_table(
                 0, horizon * int(np.prod(data_shape[2:-1])), data_shape[-1]
-            ).to(data[modality])
+            ).to(modality_data)
             positional_embedding = repeat(
                 positional_embedding, "b h w -> (repeat b) h w", repeat=data_shape[0]
             )
 
-            data[modality] = data[modality] + positional_embedding.view(data[modality].shape)
-            stem_token = stem.compute_latent(data[modality])
+            modality_data = modality_data + positional_embedding.view(modality_data.shape)
+            stem_token = stem.compute_latent(modality_data)
             feats.append(stem_token)
-            # we should make sure the state goes first and then the image
 
         return feats
 
@@ -523,14 +532,8 @@ class HPT(nn.Module):
             domain = self.config.domain_name
 
         self.train_mode = True
-        # domain, data = batch["domain"][0], batch["data"]
         features = self.forward_features(domain, batch)
 
-        # normalize the labels
-        # if domain in self.normalizer:
-        #     data["action"] = self.normalizer[domain]["action"].normalize(data["action"])
-
-        # batch = self.normalize_targets(batch)
         # head pass
         loss = self.heads[domain].compute_loss(features, batch)
         return loss
@@ -656,7 +659,6 @@ class MLPStem(PolicyStem):
     ) -> None:
         """vanilla MLP class"""
         super().__init__()
-        print("widths: ", widths, input_dim)
         modules = [nn.Linear(input_dim, widths[0]), nn.SiLU()]
 
         for i in range(len(widths) - 1):
