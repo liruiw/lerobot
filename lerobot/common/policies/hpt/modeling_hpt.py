@@ -39,6 +39,7 @@ from lerobot.common.policies.normalize import Normalize, Unnormalize
 
 LOSS = partial(F.smooth_l1_loss, beta=0.05)
 INIT_CONST = 0.02
+_LAYER_NORM = partial(nn.LayerNorm, eps=1e-6)
 
 
 class HPTPolicy(
@@ -46,14 +47,14 @@ class HPTPolicy(
     PyTorchModelHubMixin,
     library_name="lerobot",
     repo_url="https://github.com/huggingface/lerobot",
-    tags=["robotics", "act"],
+    tags=["robotics", "hpt"],
 ):
     """
-    Heterogeneous Pre-trained Transformer Policy as per Learning Fine-Grained Bimanual Manipulation with Low-Cost
-    Hardware (paper: TBU, code: https://github.com/liruiw/HPT-Transfer)
+    Heterogeneous Pre-trained Transformer Policy as per Scaling Proprioceptive-Visual Learning
+    with Heterogeneous Pre-trained Transformers  (paper: TBU, code: https://github.com/liruiw/HPT-Transfer)
     """
 
-    name = "act"
+    name = "hpt"
 
     def __init__(
         self,
@@ -94,7 +95,7 @@ class HPTPolicy(
         self.history_buffer = defaultdict(list)
 
         # current steps in open-loop rollouts
-        self.openloop_traj_step = self.action_horizon - 1
+        self.openloop_traj_step = self.config.action_horizon - 1
         self.language_embedding = None
 
     @torch.no_grad
@@ -127,10 +128,9 @@ class HPTPolicy(
             print("should call policy reset explicitly to avoid problems for evaluation in sequence.")
             self.reset()
 
-        action_dim = len(self.normalizer[domain].params_dict["action"]["input_stats"].min)
         device = next(self.parameters()).device
 
-        if self.openloop_traj_step != self.action_horizon - 1:
+        if self.openloop_traj_step != self.config.action_horizon - 1:
             # use previous predictions in open-loop execution
             self.openloop_traj_step += 1
         else:
@@ -149,8 +149,8 @@ class HPTPolicy(
                     img_queue.append(torch.FloatTensor(img_embedding).to(device).float())
                 else:
                     # raw inputs
-                    image = normalize_image_numpy(batch[img_key])
-                    img_queue.append(torch.FloatTensor(image).to(device).float())
+                    # image = normalize_image_numpy(batch[img_key])
+                    img_queue.append(torch.FloatTensor(batch[img_key]).to(device).float())
             update_history_buffer("image", torch.cat(img_queue, dim=0))  # concat in channel for views
             data_th["image"] = torch.stack(self.history_buffer["image"], dim=0).float()[None]
 
@@ -171,9 +171,10 @@ class HPTPolicy(
             if "prev_actions" in self.history_buffer:
                 data_th["prev_actions"] = torch.cat(self.history_buffer["prev_actions"], dim=1).float()
 
-            action_th = self(domain, data_th)  # forward pass
+            action_th = self.model(domain, data_th)  # forward pass to generate action
+            action_th = self.unnormalize_outputs({"action": action_th})["action"]
             self.action_traj = action_th.detach().cpu().numpy()[0]  # batch=1
-            self.action_traj = self.action_traj.reshape(-1, action_dim)  # T x Da
+            self.action_traj = self.action_traj.reshape(-1, self.config.action_dim)  # T x Da
             self.openloop_traj_step = 0  # reset steps
 
         # handle previous actions
@@ -197,38 +198,35 @@ class HPTPolicy(
 
 
 class HPT(nn.Module):
-    """Action Chunking Transformer: The underlying neural network for ACTPolicy.
+    """Heterogeneous Pre-trained Transformer: The underlying neural network for HPTPolicy.
 
-    Note: In this code we use the terms `vae_encoder`, 'encoder', `decoder`. The meanings are as follows.
-        - The `vae_encoder` is, as per the literature around variational auto-encoders (VAE), the part of the
-          model that encodes the target data (a sequence of actions), and the condition (the robot
-          joint-space).
-        - A transformer with an `encoder` (not the VAE encoder) and `decoder` (not the VAE decoder) with
-          cross-attention is used as the VAE decoder. For these terms, we drop the `vae_` prefix because we
-          have an option to train this model without the variational objective (in which case we drop the
-          `vae_encoder` altogether, and nothing about this model has anything to do with a VAE).
+    Note: In this code we use the terms `stem`, 'trunk', `head`. The meanings are as follows.
+        -  The stem, consisting of a proprioception tokenizer and a vision tokenizer, maps the
+          vision and proprioception observations of different embodiments to a fixed number (e.g. 16) of tokens.
+        -  The shared trunk, which is a Transformer, maps the concatenated tokens into shared representations.
+        -  The head then maps the processed tokens to actions in different downstream tasks.
+        For a specific embodiment, one stem/head pair is activated.
 
-                                 Transformer
-                                 Used alone for inference
-                                 (acts as VAE decoder
-                                  during training)
-                                ┌───────────────────────┐
-                                │             Outputs   │
-                                │                ▲      │
-                                │     ┌─────►┌───────┐  │
-                   ┌──────┐     │     │      │Transf.│  │
-                   │      │     │     ├─────►│decoder│  │
-              ┌────┴────┐ │     │     │      │       │  │
-              │         │ │     │ ┌───┴───┬─►│       │  │
-              │ VAE     │ │     │ │       │  └───────┘  │
-              │ encoder │ │     │ │Transf.│             │
-              │         │ │     │ │encoder│             │
-              └───▲─────┘ │     │ │       │             │
-                  │       │     │ └▲──▲─▲─┘             │
-                  │       │     │  │  │ │               │
-                inputs    └─────┼──┘  │ image emb.      │
-                                │    state emb.         │
-                                └───────────────────────┘
+            ┌───────────────────────────────────────┐
+            |               Outputs                 |
+            |                  ▲                    |
+            |             ┌───────┐                 |
+            |             | Head. │                 |
+            │             └──▲────┘                 │
+            │                │                      │
+            │            ┌───────┐                  │
+            │            | Trunk.│                  │
+            │            │ Tranf.│                  │
+            │            │       │                  │
+            │ ┌───────┬  │       │                  │
+            │ │       │  └──▲────┘                  │
+            │ │Stem.  │     │                       │
+            │ │encoder│ ────┘                       │
+            │ └▲──▲─▲─┘                             │
+            │  │  │ │                               │
+            │ image emb.       ...        ...       │
+            │    state emb.                         │
+            └───────────────────────────────────────┘
     """
 
     def __init__(self, config: HPTConfig):
@@ -246,7 +244,8 @@ class HPT(nn.Module):
         )
         self.stems = {}
         self.heads = {}
-        self.normalizer = {}
+
+        # self.normalizer = {}
         self.encoders = {}
         self.domains = []
         self.use_modality_embedding = config.network.use_modality_embedding
@@ -257,6 +256,11 @@ class HPT(nn.Module):
         self.modalities_tokens = {}
         self.domains_tokens = {}
         self.action_tokens = {}
+
+        # initialize modules
+        self.init_domain_stem(self.config.domain_name)
+        self.init_domain_head(self.config.domain_name)
+        self.finalize_modules()
 
     def init_encoders(self, modality, encoder):
         """
@@ -275,12 +279,12 @@ class HPT(nn.Module):
             self.stems[domain_name + "_" + modality] = MLPStem(self.stem_spec)
             self.stems[domain_name + "_" + modality].init_cross_attn(self.stem_spec, modality)
             self.modalities_tokens[modality] = nn.Parameter(
-                torch.randn(1, 1, self.stem_spec.modality_embed_dim) * 0.02
+                torch.randn(1, 1, self.stem_spec.modality_embed_dim) * INIT_CONST
             )
-        self.domains_tokens[domain_name] = nn.Parameter(torch.randn(1, 1, self.embed_dim) * 0.02)
+        self.domains_tokens[domain_name] = nn.Parameter(torch.randn(1, 1, self.embed_dim) * INIT_CONST)
         if self.token_postprocessing == "action_token":
             self.action_tokens[domain_name] = nn.Parameter(
-                torch.randn(1, self.action_horizon, self.embed_dim) * 0.02
+                torch.randn(1, self.action_horizon, self.embed_dim) * INIT_CONST
             )
 
     def init_domain_head(self, domain_name):
@@ -304,7 +308,7 @@ class HPT(nn.Module):
         """
         self.stems = nn.ModuleDict(self.stems)
         self.heads = nn.ModuleDict(self.heads)
-        self.normalizer = nn.ModuleDict(self.normalizer)
+        # self.normalizer = nn.ModuleDict(self.normalizer)
         self.modalities_tokens = nn.ParameterDict(self.modalities_tokens)
         self.domains_tokens = nn.ParameterDict(self.domains_tokens)
 
@@ -353,10 +357,6 @@ class HPT(nn.Module):
             add_bias_kv=True,
             drop_path=drop_path,
         )
-        if hasattr(self, "shared_modality_trunk") and self.shared_modality_trunk is not None:
-            for modality in self.shared_modality_trunk.modalities:
-                trunk[modality] = self.shared_modality_trunk[modality]
-
         return nn.ModuleDict(trunk)
 
     def _reset_parameters(self):
@@ -366,9 +366,9 @@ class HPT(nn.Module):
                 torch.nn.init.trunc_normal_(p)
 
     def forward(
-        self, batch: dict[str, Tensor], domain=None
+        self, batch: dict[str, Tensor], domain=""
     ) -> tuple[Tensor, tuple[Tensor, Tensor] | tuple[None, None]]:
-        """A forward pass through the HPT
+        """A forward pass through the HPT to generate actions at test time
 
         `batch` should have the following structure:
         {
@@ -386,13 +386,16 @@ class HPT(nn.Module):
             Tuple containing the latent PDF's parameters (mean, log(σ²)) both as (B, L) tensors where L is the
             latent dimension.
         """
+        if len(domain) == 0:
+            domain = self.config.domain_nam
+        self.train_mode = False  # for random horizon masking
         features = self.forward_features(domain, batch)
 
         # head pass
         action = self.heads[domain](features)
 
         # postprocess. unnormalize the outputs
-        action = self.postprocess_actions(domain, action)
+        # action = self.postprocess_actions(domain, action)
         return action
 
     def preprocess_tokens(self, domain: str, features: List[torch.Tensor]) -> torch.Tensor:
@@ -458,12 +461,6 @@ class HPT(nn.Module):
             return trunk_tokens.max(dim=1)[0]
         elif self.token_postprocessing == "last":
             return trunk_tokens[:, -1]
-        elif self.token_postprocessing == "attentive":
-            return self.attentive_pool(trunk_tokens)[:, 0]
-        else:
-            raise ValueError(
-                "Invalid token_postprocessing value. Must be one of ['mean', 'action_token', 'max', 'last', 'attentive']."
-            )
 
     def stem_process(self, domain: str, data: dict):
         """
@@ -510,7 +507,9 @@ class HPT(nn.Module):
             domain (str): The domain of the data.
             data (Tensor): The input data.
         """
-        data = self.preprocess_states(domain, data)
+        # data = self.preprocess_states(domain, data)
+        if len(domain) == 0:
+            domain = self.config.domain_name
 
         # stem pass
         self.stem_tokens = self.stem_process(domain, data)
@@ -525,18 +524,22 @@ class HPT(nn.Module):
         # pooling the features
         return self.postprocess_tokens(self.trunk_tokens)
 
-    def compute_loss(self, batch):
+    def compute_loss(self, batch, domain=""):
         """Compute the loss for the training loop forward pass."""
+        if len(domain) == 0:
+            domain = self.config.domain_name
+
         self.train_mode = True
-        domain, data = batch["domain"][0], batch["data"]
-        features = self.forward_features(domain, data)
+        # domain, data = batch["domain"][0], batch["data"]
+        features = self.forward_features(domain, batch)
 
         # normalize the labels
-        if domain in self.normalizer:
-            data["action"] = self.normalizer[domain]["action"].normalize(data["action"])
+        # if domain in self.normalizer:
+        #     data["action"] = self.normalizer[domain]["action"].normalize(data["action"])
 
+        # batch = self.normalize_targets(batch)
         # head pass
-        loss = self.heads[domain].compute_loss(features, data)
+        loss = self.heads[domain].compute_loss(features, batch)
         return loss
 
     def load_trunk(self, path: str, postfix: str = "_last", extension: str = "pth"):
@@ -582,15 +585,6 @@ class MLP:
         self.net = nn.Sequential(*modules)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass of the policy head module.
-
-        Args:
-            x (torch.Tensor): Input tensor of shape (batch_size, input_size).
-
-        Returns:
-            torch.Tensor: Output tensor of shape (batch_size, output_size).
-        """
         y = self.net(x)
         return y
 
@@ -617,17 +611,6 @@ class PolicyStem(nn.Module):
             dim_head=stem_spec.crossattn_dim_head,
             dropout=stem_spec.crossattn_modality_dropout,
         )
-
-    def freeze(self):
-        for param in self.parameters():
-            param.requires_grad = False
-
-    def unfreeze(self):
-        for param in self.parameters():
-            param.requires_grad = True
-
-    def save(self, path: str):
-        torch.save(self.state_dict(), path)
 
     @property
     def device(self):
@@ -883,9 +866,6 @@ class BlockWithMasking(nn.Module):
         return x
 
 
-_LAYER_NORM = partial(nn.LayerNorm, eps=1e-6)
-
-
 class MultiheadAttention(nn.MultiheadAttention):
     def forward(self, x: torch.Tensor, attn_mask: torch.Tensor):
         return super().forward(x, x, x, need_weights=False, attn_mask=attn_mask)[0]
@@ -1055,11 +1035,6 @@ def normalize_image_numpy(image: np.ndarray, resize: bool = True) -> np.ndarray:
 
     Returns:
         numpy.ndarray: The normalized image in 3 x H x W format.
-
-    Notes:
-        - The input image is resized to (224, 224) using cv2.resize.
-        - The image is normalized using the mean and standard deviation values from the ImageNet dataset.
-        - The resulting image is transposed to have dimensions of 3 x H x W.
     """
     if resize:
         image = cv2.resize(image, (224, 224))
@@ -1143,11 +1118,6 @@ class ResNet(PolicyStem):
         # by default we use a separate image encoder for each view in downstream evaluation
         self.num_of_copy = num_of_copy
         self.net = nn.Sequential(*list(pretrained_model.children())[:-2])
-
-        if num_of_copy > 1:
-            self.net = nn.ModuleList(
-                [nn.Sequential(*list(pretrained_model.children())[:-2]) for _ in range(num_of_copy)]
-            )
         self.input = input
         self.out_dim = output_dim
 
@@ -1162,18 +1132,8 @@ class ResNet(PolicyStem):
         """
         b, *_, h, w = x.shape
         x = x.view(len(x), -1, 3, h, w)
-        if self.num_of_copy > 1:
-            # separate encoding for each view
-            out = []
-            iter_num = min(self.num_of_copy, x.shape[1])
-            for idx in range(iter_num):
-                input = x[:, idx]
-                net = self.net[idx]
-                out.append(net(input))
-            feat = torch.stack(out, dim=1)
-        else:
-            x = x.view(-1, 3, h, w)
-            feat = self.net(x)
+        x = x.view(-1, 3, h, w)
+        feat = self.net(x)
         # concat along time
         feat = feat.reshape(b, -1, feat.shape[-1]).contiguous()
         return feat
