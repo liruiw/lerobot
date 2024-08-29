@@ -189,15 +189,10 @@ class HPTPolicy(
         if len(self.expected_image_keys) > 0:
             batch = dict(batch)  # shallow copy so that adding a key doesn't modify the original
             batch["observation.images"] = torch.stack([batch[k] for k in self.expected_image_keys], dim=-4)
+
         batch = self.normalize_targets(batch)
-        actions_hat, (mu_hat, log_sigma_x2_hat) = self.model(batch)
-
-        l1_loss = (
-            F.l1_loss(batch["action"], actions_hat, reduction="none") * ~batch["action_is_pad"].unsqueeze(-1)
-        ).mean()
-
-        loss_dict = {"l1_loss": l1_loss.item()}
-
+        loss = self.model.compute_loss(batch)
+        loss_dict = {"loss": loss}
         return loss_dict
 
 
@@ -242,6 +237,127 @@ class HPT(nn.Module):
         self.use_robot_state = "observation.state" in config.input_shapes
         self.use_images = any(k.startswith("observation.image") for k in config.input_shapes)
         self.use_env_state = "observation.environment_state" in config.input_shapes
+        self.embed_dim = config.network.embed_dim
+        self.shared_modality_trunk = config.network.shared_modality_trunk
+        self.no_trunk = config.network.no_trunk
+
+        self.trunk = self._create_policy_trunk(
+            config.network.embed_dim, config.network.num_blocks, config.network.num_heads
+        )
+        self.stems = {}
+        self.heads = {}
+        self.normalizer = {}
+        self.encoders = {}
+        self.domains = []
+        self.use_modality_embedding = config.network.use_modality_embedding
+        self.observation_horizon = config.network.observation_horizon
+        self.action_horizon = config.network.action_horizon
+        self.token_postprocessing = config.network.token_postprocessing
+        self.use_domain_embedding = config.network.use_domain_embedding
+        self.modalities_tokens = {}
+        self.domains_tokens = {}
+        self.action_tokens = {}
+
+    def init_encoders(self, modality, encoder):
+        """
+        Add image/language encoders into the policy parameters in the case of joint finetuning
+        """
+        self.encoders[modality] = encoder
+        self.encoders = nn.ModuleDict(self.encoders)
+
+    def init_domain_stem(self, domain_name):
+        """
+        Initialize an observation stem for each domain
+        """
+        self.stem_spec = self.config.stem
+        self.modalities = self.stem_spec.modalities
+        for modality in self.modalities:
+            self.stems[domain_name + "_" + modality] = MLPStem(self.stem_spec)
+            self.stems[domain_name + "_" + modality].init_cross_attn(self.stem_spec, modality)
+            self.modalities_tokens[modality] = nn.Parameter(
+                torch.randn(1, 1, self.stem_spec.modality_embed_dim) * 0.02
+            )
+        self.domains_tokens[domain_name] = nn.Parameter(torch.randn(1, 1, self.embed_dim) * 0.02)
+        if self.token_postprocessing == "action_token":
+            self.action_tokens[domain_name] = nn.Parameter(
+                torch.randn(1, self.action_horizon, self.embed_dim) * 0.02
+            )
+
+    def init_domain_head(self, domain_name):
+        """initialize an action head for each domain, along with normalizer"""
+        self.head_spec = self.config.head
+        self.domains.append(domain_name)
+        self.heads[domain_name] = MLP(self.embed_dim, self.head_spec)
+        # handled by LeRobot
+        # self.normalizer[domain_name] = LinearNormalizer()
+
+        # if normalizer is not None:
+        #     self.normalizer[domain_name].load_state_dict(normalizer.state_dict())
+
+    def finalize_modules(self):
+        """
+        Finalizes the modules of the policy.
+
+        This method converts the stems, heads, normalizer, modalities_tokens, domains_tokens,
+        attentive_pool, and action_tokens into ModuleDict or ParameterDict objects, depending
+        on the configuration. It also initializes the weights of the policy.
+        """
+        self.stems = nn.ModuleDict(self.stems)
+        self.heads = nn.ModuleDict(self.heads)
+        self.normalizer = nn.ModuleDict(self.normalizer)
+        self.modalities_tokens = nn.ParameterDict(self.modalities_tokens)
+        self.domains_tokens = nn.ParameterDict(self.domains_tokens)
+
+        self.apply(self._init_weights)
+        if self.token_postprocessing == "action_token":
+            self.action_tokens = nn.ParameterDict(self.action_tokens)
+
+    def _create_policy_trunk(
+        self,
+        embed_dim: int = 1024,
+        num_blocks: int = 24,
+        num_heads: int = 16,
+        drop_path: float = 0.0,
+        weight_init_style: str = "pytorch",
+        **kwargs,
+    ):
+        """create the shared representation for pretraining"""
+
+        def instantiate_trunk(embed_dim, num_blocks, num_heads, pre_transformer_ln, add_bias_kv, drop_path):
+            return SimpleTransformer(
+                embed_dim=embed_dim,
+                num_blocks=num_blocks,
+                ffn_dropout_rate=0.0,
+                drop_path_rate=drop_path,
+                attn_target=partial(
+                    MultiheadAttention,
+                    embed_dim=embed_dim,
+                    num_heads=num_heads,
+                    bias=True,
+                    add_bias_kv=add_bias_kv,
+                ),
+                pre_transformer_layer=nn.Sequential(
+                    nn.LayerNorm(embed_dim, eps=1e-6) if pre_transformer_ln else nn.Identity(),
+                    EinOpsRearrange("b l d -> l b d"),
+                ),
+                post_transformer_layer=EinOpsRearrange("l b d -> b l d"),
+                weight_init_style=weight_init_style,
+            )
+
+        trunk = {}
+        trunk["trunk"] = instantiate_trunk(
+            embed_dim=embed_dim,
+            num_blocks=num_blocks,
+            num_heads=num_heads,
+            pre_transformer_ln=False,
+            add_bias_kv=True,
+            drop_path=drop_path,
+        )
+        if hasattr(self, "shared_modality_trunk") and self.shared_modality_trunk is not None:
+            for modality in self.shared_modality_trunk.modalities:
+                trunk[modality] = self.shared_modality_trunk[modality]
+
+        return nn.ModuleDict(trunk)
 
     def _reset_parameters(self):
         """Xavier-uniform initialization of the transformer parameters as in the original code."""
@@ -249,7 +365,9 @@ class HPT(nn.Module):
             if p.dim() > 1:
                 torch.nn.init.trunc_normal_(p)
 
-    def forward(self, batch: dict[str, Tensor]) -> tuple[Tensor, tuple[Tensor, Tensor] | tuple[None, None]]:
+    def forward(
+        self, batch: dict[str, Tensor], domain=None
+    ) -> tuple[Tensor, tuple[Tensor, Tensor] | tuple[None, None]]:
         """A forward pass through the HPT
 
         `batch` should have the following structure:
@@ -268,7 +386,14 @@ class HPT(nn.Module):
             Tuple containing the latent PDF's parameters (mean, log(σ²)) both as (B, L) tensors where L is the
             latent dimension.
         """
-        pass
+        features = self.forward_features(domain, batch)
+
+        # head pass
+        action = self.heads[domain](features)
+
+        # postprocess. unnormalize the outputs
+        action = self.postprocess_actions(domain, action)
+        return action
 
     def preprocess_tokens(self, domain: str, features: List[torch.Tensor]) -> torch.Tensor:
         """
@@ -294,6 +419,24 @@ class HPT(nn.Module):
         position_tokens = self.get_position_embedding(tokens, self.embed_dim)
         tokens = tokens + position_tokens
         return tokens
+
+    def get_position_embedding(self, feature: torch.Tensor, embed_dim: int) -> torch.Tensor:
+        """
+        Add positional embedding to the features
+        """
+        if not hasattr(self, "cached_trunk_pos_embedding"):
+            self.cached_trunk_pos_embedding = {}
+
+        tokensize = feature.shape[1]
+        if tokensize not in self.cached_trunk_pos_embedding:
+            self.cached_trunk_pos_embedding[tokensize] = get_sinusoid_encoding_table(
+                0, tokensize, self.embed_dim
+            )
+            self.cached_trunk_pos_embedding[tokensize] = (
+                self.cached_trunk_pos_embedding[tokensize].repeat((1, 1, 1)).to(feature.device)
+            )
+
+        return self.cached_trunk_pos_embedding[tokensize]
 
     def postprocess_tokens(self, trunk_tokens: torch.Tensor) -> torch.Tensor:
         """
@@ -321,6 +464,90 @@ class HPT(nn.Module):
             raise ValueError(
                 "Invalid token_postprocessing value. Must be one of ['mean', 'action_token', 'max', 'last', 'attentive']."
             )
+
+    def stem_process(self, domain: str, data: dict):
+        """
+        Pass through the stem to a fixed number of tokens.
+        Args:
+            data: dictionary of tensors of different modalities
+        """
+        feats = []
+        for modality in self.modalities:
+            stem = self.stems[domain + "_" + modality]
+
+            if modality not in data:
+                continue
+
+            if "image" in modality and "image" in self.encoders:  # finetuning with encoders
+                data[modality] = self.encoders["image"](data[modality])
+
+            # positional embedding for observations
+            data_shape = data[modality].shape
+            data_horizon = data_shape[1]
+            horizon = data_horizon
+
+            if self.train_mode and self.stem_spec.random_horizon_masking and data_horizon > 1:
+                horizon = np.random.randint(1, data_horizon + 1)
+                data[modality] = data[modality][:, data_horizon - horizon : data_horizon]
+
+            # data is N x T x M x ... x D where M is the # of instances for that sensor
+            positional_embedding = get_sinusoid_encoding_table(
+                0, horizon * int(np.prod(data_shape[2:-1])), data_shape[-1]
+            ).to(data[modality])
+            positional_embedding = repeat(
+                positional_embedding, "b h w -> (repeat b) h w", repeat=data_shape[0]
+            )
+            data[modality] = data[modality] + positional_embedding.view(data[modality].shape)
+            stem_token = stem.compute_latent(data[modality])
+            feats.append(stem_token)
+
+        return feats
+
+    def forward_features(self, domain: str, data: torch.Tensor) -> torch.Tensor:
+        """
+        Compute the features for the given domain and data.
+        Args:
+            domain (str): The domain of the data.
+            data (Tensor): The input data.
+        """
+        data = self.preprocess_states(domain, data)
+
+        # stem pass
+        self.stem_tokens = self.stem_process(domain, data)
+
+        # combine tokens
+        self.trunk_tokens = self.preprocess_tokens(domain, self.stem_tokens)
+
+        # trunk pass
+        if not self.no_trunk:
+            self.trunk_tokens = self.trunk["trunk"](self.trunk_tokens)
+
+        # pooling the features
+        return self.postprocess_tokens(self.trunk_tokens)
+
+    def compute_loss(self, batch):
+        """Compute the loss for the training loop forward pass."""
+        self.train_mode = True
+        domain, data = batch["domain"][0], batch["data"]
+        features = self.forward_features(domain, data)
+
+        # normalize the labels
+        if domain in self.normalizer:
+            data["action"] = self.normalizer[domain]["action"].normalize(data["action"])
+
+        # head pass
+        loss = self.heads[domain].compute_loss(features, data)
+        return loss
+
+    def load_trunk(self, path: str, postfix: str = "_last", extension: str = "pth"):
+        """load the trunk part of the model"""
+        if "hf://" in path:
+            import huggingface_hub
+
+            if "output" in path:
+                path = path.replace("output/", "")
+            path = huggingface_hub.snapshot_download(path[len("hf://") :])
+            self.trunk.load_state_dict(torch.load(path, map_location="cpu"), strict=True)
 
 
 class MLP:
