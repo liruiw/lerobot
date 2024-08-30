@@ -100,7 +100,15 @@ def make_optimizer_and_scheduler(cfg, policy):
         lr_scheduler = VQBeTScheduler(optimizer, cfg)
     elif policy.name == "hpt":
         optimizer = torch.optim.AdamW(policy.parameters(), cfg.training.lr)
-        lr_scheduler = None
+        # follow diffusion policy to get training scheduler
+        from diffusers.optimization import get_scheduler
+
+        lr_scheduler = get_scheduler(
+            cfg.training.lr_scheduler,
+            optimizer=optimizer,
+            num_warmup_steps=cfg.training.lr_warmup_steps,
+            num_training_steps=cfg.training.offline_steps,
+        )
     else:
         raise NotImplementedError()
 

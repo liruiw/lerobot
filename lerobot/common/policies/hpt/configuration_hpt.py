@@ -126,6 +126,7 @@ class HPTConfig:
     # Vision backbone.
     domain_name: str = "robotics"
     vision_backbone: str = "resnet18"
+    head_architecture: str = "diffusion"
 
     # Network configuration
     # Trunk Transformer
@@ -169,7 +170,7 @@ class HPTConfig:
     state_widths: tuple = (128,)
     state_num_of_copy: int = 1
 
-    # Head network
+    # MLP Head network
     head_input_dim: int = 256
     head_tanh_end: bool = True
     head_action_dim: int = 14
@@ -177,6 +178,28 @@ class HPTConfig:
     openloop_action_horizon: int = 4
     head_dropout: bool = True
     head_widths: tuple = (256, 128)
+
+    # Diffusion Head Network
+    down_dims: tuple[int, ...] = (512, 1024, 2048)
+    kernel_size: int = 5
+    n_groups: int = 8
+    diffusion_step_embed_dim: int = 128
+    use_film_scale_modulation: bool = True
+    # Noise scheduler.
+    noise_scheduler_type: str = "DDPM"
+    num_train_timesteps: int = 100
+    beta_schedule: str = "squaredcos_cap_v2"
+    beta_start: float = 0.0001
+    beta_end: float = 0.02
+    prediction_type: str = "epsilon"
+    clip_sample: bool = True
+    clip_sample_range: float = 1.0
+
+    # Inference
+    num_inference_steps: int | None = None
+
+    # Loss computation
+    do_mask_loss_for_padding: bool = False
 
     def __post_init__(self):
         """Input validation (not exhaustive)."""
