@@ -113,12 +113,12 @@ class HPTConfig:
     input_normalization_modes: dict[str, str] = field(
         default_factory=lambda: {
             "observation.images.top": "mean_std",
-            "observation.state": "mean_std",
+            "observation.state": "min_max",
         }
     )
     output_normalization_modes: dict[str, str] = field(
         default_factory=lambda: {
-            "action": "mean_std",
+            "action": "min_max",
         }
     )
 
@@ -126,7 +126,6 @@ class HPTConfig:
     # Vision backbone.
     domain_name: str = "robotics"
     vision_backbone: str = "resnet18"
-    pretrained_backbone_weights: str | None = "ResNet18_Weights.IMAGENET1K_V1"
 
     # Network configuration
     # Trunk Transformer
@@ -138,9 +137,6 @@ class HPTConfig:
     token_postprocessing: str = "mean"
     weight_init_style: str = "pytorch"
     drop_path: float = 0.1
-    use_gpt_trunk: bool = False
-    use_llama_trunk: bool = False
-    hf_trunk: str = ""
     no_trunk: bool = False
     load_pretrained: bool = False
 
@@ -177,10 +173,22 @@ class HPTConfig:
     head_input_dim: int = 256
     head_tanh_end: bool = True
     head_action_dim: int = 14
-    action_horizon: int = 4
+    action_horizon: int = 8
+    openloop_action_horizon: int = 4
     head_dropout: bool = True
     head_widths: tuple = (256, 128)
 
     def __post_init__(self):
         """Input validation (not exhaustive)."""
-        pass
+        if (
+            not any(k.startswith("observation.image") for k in self.input_shapes)
+            and "observation.environment_state" not in self.input_shapes
+        ):
+            raise ValueError("You must provide at least one image or the environment state among the inputs.")
+
+        if self.output_normalization_modes != {"action": "min_max"}:
+            raise ValueError(
+                "HPT assumes the action space dimensions to all be in [-1, 1]. Therefore it is strongly "
+                f"advised that you stick with the default. See {self.__class__.__name__} docstring for more "
+                "information."
+            )
