@@ -211,6 +211,8 @@ class HPT(nn.Module):
         self.init_domain_stem(self.config.domain_name)
         self.init_domain_head(self.config.domain_name)
         self.finalize_modules()
+        if len(config.load_pretrained) > 0:
+            self.load_trunk(config.load_pretrained)
 
     def _init_weights(self, m):
         """
@@ -538,15 +540,13 @@ class HPT(nn.Module):
         loss = self.heads[domain].compute_loss(features, batch)
         return loss
 
-    def load_trunk(self, path: str, postfix: str = "_last", extension: str = "pth"):
+    def load_trunk(self, path: str):
         """load the trunk part of the model"""
-        if "hf://" in path:
-            import huggingface_hub
+        path = "liruiw/hpt-" + path
+        import huggingface_hub
 
-            if "output" in path:
-                path = path.replace("output/", "")
-            path = huggingface_hub.snapshot_download(path[len("hf://") :])
-            self.trunk.load_state_dict(torch.load(path, map_location="cpu"), strict=True)
+        download_path = huggingface_hub.snapshot_download(path)
+        self.trunk.load_state_dict(torch.load(download_path + "/trunk.pth"), strict=True)
 
 
 class MLP(nn.Module):
@@ -770,16 +770,6 @@ class Mlp(nn.Module):
         act_layer: Callable = nn.GELU,
         drop: float = 0.0,
     ):
-        """
-        Initialize the Transformer model.
-
-        Args:
-            in_features (int): Number of input features.
-            hidden_features (int, optional): Number of hidden features. Defaults to None.
-            out_features (int, optional): Number of output features. Defaults to None.
-            act_layer (torch.nn.Module, optional): Activation layer. Defaults to nn.GELU.
-            drop (float, optional): Dropout rate. Defaults to 0.0.
-        """
         super().__init__()
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
