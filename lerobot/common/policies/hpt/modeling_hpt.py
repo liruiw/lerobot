@@ -424,19 +424,6 @@ class HPT(nn.Module):
 
         for k in sorted(data):  # maintain order
             if modality in k and k in self.config.input_shapes:
-                # debug
-                # if modality == "image":
-                #     import cv2
-                #     print(k, data[k].shape)
-                #     if len(data[k].shape) == 5:
-                #         cv2.imwrite(f"{k}.png", data[k][0][0].permute(1, 2, 0).detach().cpu().numpy())
-                #     elif len(data[k].shape) == 4:
-                #         cv2.imwrite(f"{k}.png", data[k][0].permute(1, 2, 0).detach().cpu().numpy())
-                #     else:
-                #         cv2.imshow("image.png", data[k].permute(1, 2, 0).detach().cpu().numpy())
-                if modality == "image" and len(data[k].shape) == 4:
-                    data[k] = data[k][:, None]
-                    # continue
                 selected_keys.append(k)
                 selected_data.append(data[k])
 
@@ -444,23 +431,16 @@ class HPT(nn.Module):
             raise ValueError(f"{modality=} not found in data keys")
 
         if modality == "image":
-            # print("image len:", len(selected_data))
-            data = torch.cat(selected_data, dim=-4)
-            if len(data.shape) == 5:
-                data = data[:, None]  # time dimension
+            data = torch.stack(selected_data, dim=-4)
+            if data.ndim < 6:
+                data = rearrange(
+                    data, "b t c h w -> b t 1 c h w" if data.ndim == 5 else "b c h w -> b 1 1 c h w"
+                )
 
         if modality == "state":
-            # print("state len:", len(selected_data))
             data = torch.cat(selected_data, dim=-1)
-
-            if len(data.shape) == 2:
-                # time and instance dimension
-                data = data[:, None, None]
-
-            elif len(data.shape) == 3:
-                # time dimension
-                data = data[:, None]
-
+            if data.ndim < 4:
+                data = rearrange(data, "b t d -> b t 1 d" if data.ndim == 3 else "b d -> b 1 1 d")
         return modality, data
 
     def stem_process(self, domain: str, data: dict):
@@ -540,10 +520,11 @@ class HPT(nn.Module):
     def load_trunk(self, path: str):
         """load the trunk part of the model"""
         path = "liruiw/hpt-" + path
+        print(f"Loading trunk from {path}")
         import huggingface_hub
 
         download_path = huggingface_hub.snapshot_download(path)
-        self.trunk.load_state_dict(torch.load(download_path + "/trunk.pth"), strict=True)
+        self.trunk.load_state_dict(torch.load(download_path + "/trunk.pth"))
 
 
 class MLP(nn.Module):
@@ -634,8 +615,7 @@ class PolicyStem(nn.Module):
         (32, 16, 128)
         """
         # Initial reshape to adapt to token dimensions
-        # (32, 3, 1, 49, 128)
-        stem_feat = self(x)
+        stem_feat = self(x)  # (32, 3, 1, 49, 128)
         stem_feat = stem_feat.reshape(stem_feat.shape[0], -1, stem_feat.shape[-1])  # (32, 147, 128)
         # Replicating tokens for each item in the batch and computing cross-attention
         stem_tokens = self.tokens.repeat(len(stem_feat), 1, 1)  # (32, 16, 128)
