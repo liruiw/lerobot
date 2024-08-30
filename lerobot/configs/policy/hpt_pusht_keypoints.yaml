@@ -12,7 +12,7 @@ training:
   save_freq: 20000
   save_checkpoint: true
 
-  batch_size: 8
+  batch_size: 256
   lr: 1e-5
   lr_backbone: 1e-5
   weight_decay: 1e-4
@@ -26,7 +26,7 @@ training:
 
 eval:
   n_episodes: 50
-  batch_size: 50
+  batch_size: 5
 
 # See `configuration_act.py` for more details.
 policy:
@@ -63,7 +63,7 @@ policy:
   use_llama_trunk: False # load pre-trained trunk from LLaMA2
   hf_trunk: "" # load pre-trained transformer from huggingface
   no_trunk: False # no trunk
-  load_pretrained: False # load pre-trained model
+  load_pretrained: "base" # load pre-trained model
 
   # stem network (projectors) for different modalities
   modalities: ['state'] # 'language'
@@ -74,7 +74,7 @@ policy:
   crossattn_dim_head: 64 # for cross attention modules
   crossattn_heads: 8 # number of heads in cross attention
   crossattn_modality_dropout: 0.1 # the dropout ratio for cross attention
-  observation_horizon: 2 # observation horizon
+  observation_horizon: 1 # observation horizon
   random_horizon_masking: True # whether to randomize observation input length
   add_pos_embedding_to_state: False # positional embedding for the state
 

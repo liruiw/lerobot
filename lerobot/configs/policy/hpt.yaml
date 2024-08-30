@@ -28,7 +28,7 @@ training:
 
 eval:
   n_episodes: 50 # 50
-  batch_size: 3 # 50
+  batch_size: 1 # 50
 
 # See `configuration_act.py` for more details.
 policy:
@@ -77,7 +77,7 @@ policy:
   crossattn_dim_head: 64 # for cross attention modules
   crossattn_heads: 8 # number of heads in cross attention
   crossattn_modality_dropout: 0.1 # the dropout ratio for cross attention
-  observation_horizon: 2 # observation horizon
+  observation_horizon: 1 # observation horizon
   random_horizon_masking: True # whether to randomize observation input length
   add_pos_embedding_to_state: False # positional embedding for the state
 
