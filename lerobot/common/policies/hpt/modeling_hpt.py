@@ -105,7 +105,6 @@ class HPTPolicy(
         """
         self.eval()
         batch = self.normalize_inputs(batch)
-        domain = self.config.domain_name
 
         if not hasattr(self, "history_buffer"):
             print("should call policy reset explicitly to avoid problems for evaluation in sequence.")
@@ -122,7 +121,7 @@ class HPTPolicy(
                 self.history_buffer[modality].append(data)
                 batch_with_history[modality] = torch.stack(list(self.history_buffer[modality]), dim=1).float()
 
-            action_th = self.model(batch_with_history, domain)
+            action_th = self.model(batch_with_history)
             self.action_traj = action_th
             self.action_traj = self.action_traj.reshape(
                 len(action_th), -1, self.config.head_action_dim
