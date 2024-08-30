@@ -43,9 +43,12 @@ training:
   save_checkpoint: true
 
   batch_size: 8
-  lr: 1e-5
-  lr_backbone: 1e-5
-  weight_decay: 1e-4
+  lr: 1.0e-4
+  lr_scheduler: cosine
+  lr_warmup_steps: 500
+  adam_betas: [0.95, 0.999]
+  adam_eps: 1.0e-8
+  adam_weight_decay: 1.0e-6
   grad_clip_norm: 10
   online_steps_between_rollouts: 1
 
@@ -138,3 +141,25 @@ policy:
   head_action_dim: "${env.action_dim}" # overwrite based on dataset
   head_dropout: True
   head_widths: [256, 128]
+
+  # Diffusion Head
+  down_dims: [256, 512, 1024]
+  kernel_size: 5
+  n_groups: 8
+  diffusion_step_embed_dim: 128
+  use_film_scale_modulation: True
+  # Noise scheduler.
+  noise_scheduler_type: DDIM
+  num_train_timesteps: 100
+  beta_schedule: squaredcos_cap_v2
+  beta_start: 0.0001
+  beta_end: 0.02
+  prediction_type: epsilon # epsilon / sample
+  clip_sample: True
+  clip_sample_range: 1.0
+
+  # Inference
+  num_inference_steps: 10  # if not provided, defaults to `num_train_timesteps`
+
+  # Loss computation
+  do_mask_loss_for_padding: false

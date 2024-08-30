@@ -33,6 +33,7 @@ from torch import Tensor, einsum, nn
 
 from lerobot.common.policies.hpt.configuration_hpt import HPTConfig
 from lerobot.common.policies.normalize import Normalize, Unnormalize
+from lerobot.common.policies.utils import get_device_from_parameters
 
 LOSS = partial(F.smooth_l1_loss, beta=0.05)
 INIT_CONST = 0.02
@@ -90,8 +91,6 @@ class HPTPolicy(
     def reset(self):
         """This should be called whenever the environment is reset."""
         self.history_buffer = defaultdict(deque, maxlen=self.model.observation_horizon)
-
-        # current steps in open-loop rollouts
         self.openloop_traj_step = self.config.openloop_action_horizon - 1
         self.language_embedding = None
 
@@ -106,10 +105,6 @@ class HPTPolicy(
         self.eval()
         batch = self.normalize_inputs(batch)
 
-        if not hasattr(self, "history_buffer"):
-            print("should call policy reset explicitly to avoid problems for evaluation in sequence.")
-            self.reset()
-
         if self.openloop_traj_step != self.config.openloop_action_horizon - 1:
             # use previous predictions in open-loop execution
             self.openloop_traj_step += 1
@@ -122,10 +117,7 @@ class HPTPolicy(
                 batch_with_history[modality] = torch.stack(list(self.history_buffer[modality]), dim=1).float()
 
             action_th = self.model(batch_with_history)
-            self.action_traj = action_th
-            self.action_traj = self.action_traj.reshape(
-                len(action_th), -1, self.config.head_action_dim
-            )  # [B, T, Da]
+            self.action_traj = action_th.reshape(len(action_th), -1, self.config.head_action_dim)
             self.openloop_traj_step = 0  # reset steps
 
         curr_action = self.action_traj[:, self.openloop_traj_step]
@@ -135,10 +127,6 @@ class HPTPolicy(
     def forward(self, batch: dict[str, Tensor]) -> dict[str, Tensor]:
         """Run the batch through the model and compute the loss for training or validation."""
         batch = self.normalize_inputs(batch)
-        if len(self.expected_image_keys) > 0:
-            batch = dict(batch)  # shallow copy so that adding a key doesn't modify the original
-            batch["observation.images"] = torch.stack([batch[k] for k in self.expected_image_keys], dim=-4)
-
         batch = self.normalize_targets(batch)
         loss = self.model.compute_loss(batch)
         loss_dict = {"loss": loss}
@@ -204,7 +192,8 @@ class HPT(nn.Module):
         self.action_tokens = {}
 
         # initialize modules.
-        self.init_encoders("image", ResNet())
+        if "image" in config.modalities:
+            self.init_encoders("image", ResNet())
         self.init_domain_stem(self.config.domain_name)
         self.init_domain_head(self.config.domain_name)
         self.finalize_modules()
@@ -259,11 +248,20 @@ class HPT(nn.Module):
         self.head_spec = self.config
         self.action_horizon = self.config.action_horizon
         self.domains.append(domain_name)
-        self.heads[domain_name] = MLP(
-            input_dim=self.config.head_input_dim,
-            output_dim=self.config.head_action_dim * self.config.action_horizon,
-            widths=self.config.head_widths,
-        )
+        if self.config.head_architecture == "diffusion":
+            self.heads[domain_name] = DiffusionHead(
+                config=self.config,
+                embed_dim=self.config.embed_dim,
+                action_horizon=self.config.action_horizon,
+                action_dim=self.config.head_action_dim,
+            )
+
+        elif self.config.head_architecture == "mlp":
+            self.heads[domain_name] = MLPHead(
+                input_dim=self.config.head_input_dim,
+                output_dim=self.config.head_action_dim * self.config.action_horizon,
+                widths=self.config.head_widths,
+            )
 
     def finalize_modules(self):
         """
@@ -329,7 +327,7 @@ class HPT(nn.Module):
         self.apply(self._init_weights)
 
     def forward(self, batch: dict[str, Tensor]) -> tuple[Tensor, tuple[Tensor, Tensor] | tuple[None, None]]:
-        """A forward pass through the HPT to generate actions at test time
+        """A forward pass through the HPT to generate actions at test time. Assume inputs have been normalized.
 
         `batch` should have the following structure:
         {
@@ -469,14 +467,14 @@ class HPT(nn.Module):
                 modality_data = modality_data[:, data_horizon - horizon : data_horizon]
 
             # data is N x T x M x ... x D where M is the # of instances for that sensor
-            positional_embedding = get_sinusoid_encoding_table(
-                0, horizon * int(np.prod(data_shape[2:-1])), data_shape[-1]
-            ).to(modality_data)
-            positional_embedding = repeat(
-                positional_embedding, "b h w -> (repeat b) h w", repeat=data_shape[0]
-            )
+            # positional_embedding = get_sinusoid_encoding_table(
+            #     0, horizon * int(np.prod(data_shape[2:-1])), data_shape[-1]
+            # ).to(modality_data)
+            # positional_embedding = repeat(
+            #     positional_embedding, "b h w -> (repeat b) h w", repeat=data_shape[0]
+            # )
 
-            modality_data = modality_data + positional_embedding.view(modality_data.shape)
+            # modality_data = modality_data + positional_embedding.view(modality_data.shape)
             stem_token = stem.compute_latent(modality_data)
             feats.append(stem_token)
 
@@ -505,15 +503,11 @@ class HPT(nn.Module):
         # pooling the features
         return self.postprocess_tokens(self.trunk_tokens)
 
-    def compute_loss(self, batch, domain=""):
+    def compute_loss(self, batch):
         """Compute the loss for the training loop forward pass."""
-        if len(domain) == 0:
-            domain = self.config.domain_name
-
+        domain = self.config.domain_name
         self.train_mode = True
         features = self.forward_features(domain, batch)
-
-        # head pass
         loss = self.heads[domain].compute_loss(features, batch)
         return loss
 
@@ -527,7 +521,7 @@ class HPT(nn.Module):
         self.trunk.load_state_dict(torch.load(download_path + "/trunk.pth"))
 
 
-class MLP(nn.Module):
+class MLPHead(nn.Module):
     """Simple MLP based policy head"""
 
     def __init__(
@@ -538,7 +532,6 @@ class MLP(nn.Module):
         dropout: bool = False,
         tanh_end: bool = True,
         ln: bool = True,
-        **kwargs,
     ) -> None:
         """vanilla MLP head on the pooled feature"""
         super().__init__()
@@ -559,13 +552,86 @@ class MLP(nn.Module):
         self.net = nn.Sequential(*modules)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        y = self.net(x)
-        return y
+        return self.net(x)
 
-    def compute_loss(self, x: torch.Tensor, data: dict) -> torch.Tensor:
-        self.target_action = data["action"]
-        self.pred_action = self(x).view(self.target_action.shape)
-        return LOSS(self.pred_action, self.target_action)
+    def compute_loss(self, x: torch.Tensor, target: dict) -> torch.Tensor:
+        target_action = target["action"]
+        pred_action = self(x).view(self.target_action.shape)
+        return LOSS(pred_action, target_action)
+
+
+class DiffusionHead(nn.Module):
+    """Simple Diffusion based policy head based on modifications of the diffusion implementation"""
+
+    def __init__(self, config, embed_dim: int, action_horizon: int, action_dim: int) -> None:
+        super().__init__()
+        from ..diffusion.modeling_diffusion import DiffusionConditionalUnet1d, _make_noise_scheduler
+
+        self.model = DiffusionConditionalUnet1d(config=config, global_cond_dim=embed_dim)
+        self.action_horizon = action_horizon
+        self.action_dim = action_dim
+        self.noise_scheduler = _make_noise_scheduler(
+            config.noise_scheduler_type,
+            num_train_timesteps=config.num_train_timesteps,
+            beta_start=config.beta_start,
+            beta_end=config.beta_end,
+            beta_schedule=config.beta_schedule,
+            clip_sample=config.clip_sample,
+            clip_sample_range=config.clip_sample_range,
+            prediction_type=config.prediction_type,
+        )
+
+        if config.num_inference_steps is None:
+            self.num_inference_steps = self.noise_scheduler.config.num_train_timesteps
+        else:
+            self.num_inference_steps = config.num_inference_steps
+
+    def conditional_sample(
+        self,
+        global_cond,
+        generator=None,
+    ):
+        """
+        Perform conditional sampling using the diffusion process.
+        """
+        model = self.model
+        scheduler = self.noise_scheduler
+        device = get_device_from_parameters(model)
+        trajectory = torch.randn(
+            size=(len(global_cond), self.action_horizon, self.action_dim),
+            dtype=global_cond.dtype,
+            device=device,
+            generator=generator,
+        )
+
+        global_cond = global_cond.to(device)
+        scheduler.set_timesteps(self.num_inference_steps)
+        for t in scheduler.timesteps:
+            model_output = model(
+                trajectory,
+                torch.full(trajectory.shape[:1], t, dtype=torch.long, device=trajectory.device),
+                global_cond=global_cond,
+            )
+            trajectory = scheduler.step(model_output, t, trajectory, generator=generator).prev_sample
+        return trajectory
+
+    def forward(self, global_cond):
+        return self.conditional_sample(global_cond)
+
+    def compute_loss(self, global_cond, data):
+        trajectory = data["action"].reshape(
+            (len(global_cond), self.action_horizon, self.action_dim)
+        )  # Reshape the action tensor
+        noise = torch.randn(trajectory.shape, device=trajectory.device)
+        bsz = trajectory.shape[0]
+
+        timesteps = torch.randint(
+            0, self.noise_scheduler.num_train_timesteps, (bsz,), device=trajectory.device
+        ).long()
+        noisy_trajectory = self.noise_scheduler.add_noise(trajectory, noise, timesteps)
+        pred = self.model(noisy_trajectory, timesteps, global_cond=global_cond)
+        target = noise
+        return F.mse_loss(pred, target)
 
 
 class PolicyStem(nn.Module):
@@ -617,6 +683,8 @@ class PolicyStem(nn.Module):
         # Initial reshape to adapt to token dimensions
         stem_feat = self(x)  # (32, 3, 1, 49, 128)
         stem_feat = stem_feat.reshape(stem_feat.shape[0], -1, stem_feat.shape[-1])  # (32, 147, 128)
+        return stem_feat  # debug
+
         # Replicating tokens for each item in the batch and computing cross-attention
         stem_tokens = self.tokens.repeat(len(stem_feat), 1, 1)  # (32, 16, 128)
         stem_tokens = self.cross_attention(stem_tokens, stem_feat)  # (32, 16, 128)
