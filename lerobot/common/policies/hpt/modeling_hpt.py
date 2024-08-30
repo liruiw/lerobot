@@ -422,12 +422,21 @@ class HPT(nn.Module):
         selected_keys = []
         selected_data = []
 
-        for k in data:
-            if modality in k:
-                if modality == "state" and "is_pad" in k:
-                    continue
+        for k in sorted(data):  # maintain order
+            if modality in k and k in self.config.input_shapes:
+                # debug
+                # if modality == "image":
+                #     import cv2
+                #     print(k, data[k].shape)
+                #     if len(data[k].shape) == 5:
+                #         cv2.imwrite(f"{k}.png", data[k][0][0].permute(1, 2, 0).detach().cpu().numpy())
+                #     elif len(data[k].shape) == 4:
+                #         cv2.imwrite(f"{k}.png", data[k][0].permute(1, 2, 0).detach().cpu().numpy())
+                #     else:
+                #         cv2.imshow("image.png", data[k].permute(1, 2, 0).detach().cpu().numpy())
                 if modality == "image" and len(data[k].shape) == 4:
-                    continue
+                    data[k] = data[k][:, None]
+                    # continue
                 selected_keys.append(k)
                 selected_data.append(data[k])
 
@@ -435,11 +444,13 @@ class HPT(nn.Module):
             raise ValueError(f"{modality=} not found in data keys")
 
         if modality == "image":
+            # print("image len:", len(selected_data))
             data = torch.cat(selected_data, dim=-4)
             if len(data.shape) == 5:
                 data = data[:, None]  # time dimension
 
         if modality == "state":
+            # print("state len:", len(selected_data))
             data = torch.cat(selected_data, dim=-1)
 
             if len(data.shape) == 2:
@@ -491,7 +502,7 @@ class HPT(nn.Module):
 
         return feats
 
-    def forward_features(self, domain: str, data: torch.Tensor) -> torch.Tensor:
+    def forward_features(self, domain: str, data: dict) -> torch.Tensor:
         """
         Compute the features for the given domain and data.
         Args:
