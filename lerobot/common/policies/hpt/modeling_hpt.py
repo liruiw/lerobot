@@ -92,11 +92,11 @@ class HPTPolicy(
         self.history_buffer = defaultdict(deque, maxlen=self.model.observation_horizon)
 
         # current steps in open-loop rollouts
-        self.openloop_traj_step = self.config.action_horizon - 1
+        self.openloop_traj_step = self.config.openloop_action_horizon - 1
         self.language_embedding = None
 
     @torch.no_grad
-    def select_action(self, batch: dict[str, Tensor], domain=None) -> Tensor:
+    def select_action(self, batch: dict[str, Tensor]) -> Tensor:
         """Select a single action given environment observations.
 
         This method wraps `select_actions` in order to return one action at a time for execution in the
@@ -105,15 +105,13 @@ class HPTPolicy(
         """
         self.eval()
         batch = self.normalize_inputs(batch)
-
-        if domain is None:  # default
-            domain = self.config.domain_name
+        domain = self.config.domain_name
 
         if not hasattr(self, "history_buffer"):
             print("should call policy reset explicitly to avoid problems for evaluation in sequence.")
             self.reset()
 
-        if self.openloop_traj_step != self.config.action_horizon - 1:
+        if self.openloop_traj_step != self.config.openloop_action_horizon - 1:
             # use previous predictions in open-loop execution
             self.openloop_traj_step += 1
         else:
@@ -124,14 +122,13 @@ class HPTPolicy(
                 self.history_buffer[modality].append(data)
                 batch_with_history[modality] = torch.stack(list(self.history_buffer[modality]), dim=1).float()
 
-            action_th = self.model(batch_with_history, domain)  # forward pass to generate action
-            self.action_traj = action_th  # batch=1
+            action_th = self.model(batch_with_history, domain)
+            self.action_traj = action_th
             self.action_traj = self.action_traj.reshape(
                 len(action_th), -1, self.config.head_action_dim
-            )  # B x T x Da
+            )  # [B, T, Da]
             self.openloop_traj_step = 0  # reset steps
 
-        # import IPython; IPython.embed()
         curr_action = self.action_traj[:, self.openloop_traj_step]
         curr_action = self.unnormalize_outputs({"action": curr_action})["action"]
         return curr_action
@@ -159,26 +156,28 @@ class HPT(nn.Module):
         -  The head then maps the processed tokens to actions in different downstream tasks.
         For a specific embodiment, one stem/head pair is activated.
 
-            ┌───────────────────────────────────────┐
-            |               Outputs                 |
-            |                  ▲                    |
-            |             ┌───────┐                 |
-            |             | Head. │                 |
-            │             └──▲────┘                 │
-            │                │                      │
-            │            ┌───────┐                  │
-            │            | Trunk.│                  │
-            │            │ Tranf.│                  │
-            │            │       │                  │
-            │ ┌───────┬  │       │                  │
-            │ │       │  └──▲────┘                  │
-            │ │Stem.  │     │                       │
-            │ │encoder│ ────┘                       │
-            │ └▲──▲─▲─┘                             │
-            │  │  │ │                               │
-            │ image emb.       ...        ...       │
-            │    state emb.                         │
-            └───────────────────────────────────────┘
+    ┌───────────────────────────────────────────────────────────┐
+    |                               Outputs                     |
+    |                                ▲                          |
+    |     ┌─────────────┐   ┌─────────────┐   ┌──────────┐      |
+    |     |   Head 1    |   |    Head 2   |   | Head 3   |      |
+    |     └──────▲──────┘   └───────▲─────┘   └────▲─────┘      |
+    |            │                  │              │            |
+    |            ┌─────────────────────────────────┐            |
+    |            |          Trunk Transformer.     │            |
+    |            └────────▲──────────▲─────────────┘            |
+    |                     │          │                          |
+    |           ┌─────────┴──────┬───┴────────────┐             |
+    |           │                │                │             |
+    |   ┌───────┴────┐   ┌─────┴─────┐   ┌────┴──────┐          |
+    |   │  Stem.     │   │  Stem.    │   │  Stem.    │          |
+    |   │  Encoder 1 │   │  Encoder 2│   │  Encoder 3│          |
+    |   │  ┌─────────┐   │ ┌─────────┐   │ ┌─────────┐          |
+    |   │  │image emb│   │ │image emb│   │ │image emb│          |
+    |   │  │state emb│   │ │state emb│   │ │state emb│          |
+    |   └──┴─────────┘   └─┴─────────┘   └─┴─────────┘          |
+    |                                                           |
+    └───────────────────────────────────────────────────────────┘
     """
 
     def __init__(self, config: HPTConfig):
@@ -194,7 +193,6 @@ class HPT(nn.Module):
         self.stems = {}
         self.heads = {}
 
-        # self.normalizer = {}
         self.encoders = {}
         self.domains = []
         self.use_modality_embedding = config.use_modality_embedding
@@ -293,7 +291,6 @@ class HPT(nn.Module):
         num_heads: int = 16,
         drop_path: float = 0.0,
         weight_init_style: str = "pytorch",
-        **kwargs,
     ):
         """create the shared representation for pretraining"""
 
@@ -330,12 +327,9 @@ class HPT(nn.Module):
         return nn.ModuleDict(trunk)
 
     def _reset_parameters(self):
-        """Xavier-uniform initialization of the transformer parameters as in the original code."""
         self.apply(self._init_weights)
 
-    def forward(
-        self, batch: dict[str, Tensor], domain: str = ""
-    ) -> tuple[Tensor, tuple[Tensor, Tensor] | tuple[None, None]]:
+    def forward(self, batch: dict[str, Tensor]) -> tuple[Tensor, tuple[Tensor, Tensor] | tuple[None, None]]:
         """A forward pass through the HPT to generate actions at test time
 
         `batch` should have the following structure:
@@ -351,16 +345,10 @@ class HPT(nn.Module):
 
         Returns:
             (B, chunk_size, action_dim) batch of action sequences
-            Tuple containing the latent PDF's parameters (mean, log(σ²)) both as (B, L) tensors where L is the
-            latent dimension.
         """
-        if len(domain) == 0:
-            domain = self.config.domain_name
-
-        self.train_mode = False  # for random horizon masking
+        domain = self.config.domain_name
+        self.train_mode = False  # disable random horizon masking
         features = self.forward_features(domain, batch)
-
-        # head pass
         action = self.heads[domain](features)
 
         return action
@@ -387,11 +375,11 @@ class HPT(nn.Module):
             action_tokens = self.action_tokens[domain].repeat(len(tokens), 1, 1)
             tokens = torch.cat([tokens, action_tokens], dim=-2)
 
-        position_tokens = self.get_position_embedding(tokens, self.embed_dim)
+        position_tokens = self.get_position_embedding(tokens)
         tokens = tokens + position_tokens
         return tokens
 
-    def get_position_embedding(self, feature: torch.Tensor, embed_dim: int) -> torch.Tensor:
+    def get_position_embedding(self, feature: torch.Tensor) -> torch.Tensor:
         """
         Add positional embedding to the features
         """
@@ -511,7 +499,6 @@ class HPT(nn.Module):
             domain (str): The domain of the data.
             data (Tensor): The input data.
         """
-        # data = self.preprocess_states(domain, data)
         if len(domain) == 0:
             domain = self.config.domain_name
 
@@ -558,7 +545,7 @@ class MLP(nn.Module):
         output_dim: int = 10,
         widths: List[int] = (512, 512),
         dropout: bool = False,
-        tanh_end: bool = False,
+        tanh_end: bool = True,
         ln: bool = True,
         **kwargs,
     ) -> None:
@@ -655,9 +642,8 @@ class MLPStem(PolicyStem):
         tanh_end: bool = False,
         ln: bool = True,
         num_of_copy: int = 1,
-        **kwargs,
     ) -> None:
-        """vanilla MLP class"""
+        """MLP Stem class"""
         super().__init__()
         modules = [nn.Linear(input_dim, widths[0]), nn.SiLU()]
 
@@ -822,10 +808,6 @@ class BlockWithMasking(nn.Module):
         self.norm_2 = norm_layer(dim)
         self.layer_scale_type = layer_scale_type
         if self.layer_scale_type is not None:
-            assert self.layer_scale_type in [
-                "per_channel",
-                "scalar",
-            ], f"Found Layer scale type {self.layer_scale_type}"
             if self.layer_scale_type == "per_channel":
                 # one gamma value per channel
                 gamma_shape = [1, 1, dim]
@@ -871,11 +853,9 @@ class SimpleTransformer(nn.Module):
         norm_layer: Callable = _LAYER_NORM,
         mlp_ratio: int = 4,
         ffn_dropout_rate: float = 0.0,
-        layer_scale_type: Optional[
-            str
-        ] = None,  # from cait; possible values are None, "per_channel", "scalar"
-        layer_scale_init_value: float = 1e-4,  # from cait; float
-        weight_init_style: str = "pytorch",  # possible values jax or pytorch
+        layer_scale_type: Optional[str] = None,
+        layer_scale_init_value: float = 1e-4,
+        weight_init_style: str = "pytorch",
     ):
         """
         Simple Transformer with the following features
@@ -913,14 +893,7 @@ class SimpleTransformer(nn.Module):
         self.weight_init_style = weight_init_style
         self.apply(self._init_weights)
 
-    def forward(
-        self,
-        tokens: torch.Tensor,
-        attn_mask: torch.Tensor = None,
-        use_checkpoint: bool = False,
-        checkpoint_every_n: int = 1,
-        checkpoint_blk_ids: Optional[List[int]] = None,
-    ):
+    def forward(self, tokens: torch.Tensor, attn_mask: torch.Tensor = None):
         """
         Inputs
         - tokens: data of shape N x L x D (or L x N x D depending on the attention implementation)
@@ -931,12 +904,6 @@ class SimpleTransformer(nn.Module):
         """
         if self.pre_transformer_layer:
             tokens = self.pre_transformer_layer(tokens)
-        if use_checkpoint and checkpoint_blk_ids is None:
-            checkpoint_blk_ids = [
-                blk_id for blk_id in range(len(self.blocks)) if blk_id % checkpoint_every_n == 0
-            ]
-        if checkpoint_blk_ids:
-            checkpoint_blk_ids = set(checkpoint_blk_ids)
         for _, blk in enumerate(self.blocks):
             tokens = blk(tokens, attn_mask=attn_mask)
         if self.post_transformer_layer:
@@ -995,13 +962,10 @@ class ResNet(PolicyStem):
         weights: str = "DEFAULT",
         resnet_model: str = "resnet18",
         num_of_copy: int = 1,
-        **kwargs,
     ) -> None:
         """ResNet Encoder for Images"""
         super().__init__()
         pretrained_model = getattr(torchvision.models, resnet_model)(weights=weights)
-
-        # by default we use a separate image encoder for each view in downstream evaluation
         self.num_of_copy = num_of_copy
         self.net = nn.Sequential(*list(pretrained_model.children())[:-2])
         self.input = input

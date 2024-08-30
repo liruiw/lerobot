@@ -13,9 +13,8 @@ training:
   save_checkpoint: true
 
   batch_size: 256
-  lr: 1e-5
-  lr_backbone: 1e-5
-  weight_decay: 1e-4
+  lr: 1e-4
+  lr_backbone: 1e-4
   grad_clip_norm: 10
   online_steps_between_rollouts: 1
 
@@ -63,7 +62,7 @@ policy:
   use_llama_trunk: False # load pre-trained trunk from LLaMA2
   hf_trunk: "" # load pre-trained transformer from huggingface
   no_trunk: False # no trunk
-  load_pretrained: "base" # load pre-trained model
+  load_pretrained: "" # load pre-trained model
 
   # stem network (projectors) for different modalities
   modalities: ['state'] # 'language'
