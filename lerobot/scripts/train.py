@@ -100,7 +100,7 @@ def make_optimizer_and_scheduler(cfg, policy):
         lr_scheduler = VQBeTScheduler(optimizer, cfg)
     elif policy.name == "hpt":
         optimizer = torch.optim.AdamW(policy.parameters(), cfg.training.lr)
-        # follow diffusion policy to get training scheduler
+        # follow diffusion policy to get the training scheduler
         from diffusers.optimization import get_scheduler
 
         lr_scheduler = get_scheduler(

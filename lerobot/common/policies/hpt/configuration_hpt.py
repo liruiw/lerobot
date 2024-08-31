@@ -180,6 +180,9 @@ class HPTConfig:
     head_widths: tuple = (256, 128)
 
     # Diffusion Head Network
+    n_obs_steps = 2
+    horizon = 16
+    n_action_steps = 8
     down_dims: tuple[int, ...] = (512, 1024, 2048)
     kernel_size: int = 5
     n_groups: int = 8

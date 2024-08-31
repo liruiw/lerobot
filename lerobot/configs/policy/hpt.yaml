@@ -1,6 +1,5 @@
 # @package _global_
 
-# inherited from act.yaml
 seed: 1000
 dataset_repo_id: lerobot/aloha_sim_insertion_human
 
@@ -19,7 +18,7 @@ training:
   save_checkpoint: true
 
   batch_size: 16
-  lr: 1.0e-4
+  lr: 1.0e-5
   lr_scheduler: cosine
   lr_warmup_steps: 500
   adam_betas: [0.95, 0.999]
@@ -64,7 +63,7 @@ policy:
   embed_dim: 256
   num_blocks: 16
   num_heads: 8
-  use_modality_embedding: True
+  use_modality_embedding: False
   use_domain_embedding: False
   token_postprocessing: "mean"
   weight_init_style: 'pytorch'
