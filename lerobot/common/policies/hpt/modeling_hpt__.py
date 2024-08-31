@@ -19,25 +19,21 @@ As per Scaling Proprioceptive-Visual Learning with Heterogeneous Pre-trained Tra
 The majority of changes here involve removing unused code, unifying naming, and adding helpful comments.
 """
 
-from collections import deque, defaultdict
+from collections import defaultdict, deque
 from functools import partial
+from typing import Callable, List, Optional, Tuple
 
+import numpy as np
 import torch
 import torch.nn.functional as F  # noqa: N812
+import torchvision
+from einops import rearrange, repeat
 from huggingface_hub import PyTorchModelHubMixin
-from torch import Tensor, nn
+from torch import Tensor, einsum, nn
 
 from lerobot.common.policies.hpt.configuration_hpt import HPTConfig
 from lerobot.common.policies.normalize import Normalize, Unnormalize
-from lerobot.common.policies.utils import populate_queues, get_device_from_parameters
-
-from typing import Callable, List, Optional, Tuple
-import numpy as np
-import torchvision
-from einops import rearrange, repeat
-from torch import Tensor, einsum, nn
-
-
+from lerobot.common.policies.utils import get_device_from_parameters, populate_queues
 
 LOSS = partial(F.smooth_l1_loss, beta=0.05)
 INIT_CONST = 0.02
@@ -86,18 +82,9 @@ class HPTPolicy(
             config.output_shapes, config.output_normalization_modes, dataset_stats
         )
 
-        ######################################## debug
-        config.n_action_steps = config.openloop_action_horizon
-        config.horizon = config.action_horizon
-        from ..diffusion.modeling_diffusion import DiffusionModel
+        self.model = HPT(config)
 
-        # self.diffusion = DiffusionModel(config)
-        self.diffusion = HPT(config)
-
-        self.use_env_state = "observation.environment_state" in config.input_shapes
-        #######################################
         self.reset()
-
 
     def reset(self):
         """This should be called whenever the environment is reset."""
@@ -110,16 +97,18 @@ class HPTPolicy(
     @torch.no_grad
     def select_action(self, batch: dict[str, Tensor]) -> Tensor:
         """Select a single action given environment observations.
+
+        This method wraps `select_actions` in order to return one action at a time for execution in the
+        environment. It works by managing the actions in a queue and only calling `select_actions` when the
+        queue is empty.
         """
         batch = self.normalize_inputs(batch)
-      
-        # Note: It's important that this happens after stacking the images into a single key.
         self._queues = populate_queues(self._queues, batch)
 
         if len(self._queues["action"]) == 0:
             # stack n latest observations from the queue
             batch = {k: torch.stack(list(self._queues[k]), dim=1) for k in batch if k in self._queues}
-            actions = self.diffusion.generate_actions(batch)
+            actions = self.model(batch)
 
             # TODO(rcadene): make above methods return output dictionary?
             actions = self.unnormalize_outputs({"action": actions})["action"]
@@ -127,15 +116,39 @@ class HPTPolicy(
             self._queues["action"].extend(actions.transpose(0, 1))
 
         action = self._queues["action"].popleft()
+
+        # # handle state and language
+        # for modality, data in batch.items():
+        #     while len(self.history_buffer[modality]) < self.model.n_obs_steps:
+        #         # while not filled, fill with the first observation
+        #         self.history_buffer[modality].append(data)
+        #     batch_with_history[modality] = torch.stack(list(self.history_buffer[modality]), dim=1).float()
+
+        # if self.openloop_traj_step != self.config.openloop_action_horizon - 1:
+        #     self.openloop_traj_step += 1
+
+        # else:
+        #     action_th = self.model(batch_with_history)
+        #     action_th = self.unnormalize_outputs({"action": action_th})["action"]
+        #     self.action_traj = action_th.view(len(action_th), -1, self.config.head_action_dim)
+
+        #     # select from observation horizon
+        #     start = self.model.n_obs_steps - 1
+        #     end = start + self.config.openloop_action_horizon
+        #     self.action_traj = self.action_traj[:, start:end]
+        #     self.openloop_traj_step = 0  # reset steps
+
+        # action = self.action_traj[:, self.openloop_traj_step]
         return action
 
     def forward(self, batch: dict[str, Tensor]) -> dict[str, Tensor]:
         """Run the batch through the model and compute the loss for training or validation."""
         batch = self.normalize_inputs(batch)
         batch = self.normalize_targets(batch)
-        loss = self.diffusion.compute_loss(batch)
+        loss = self.model.compute_loss(batch)
         loss_dict = {"loss": loss}
         return loss_dict
+
 
 class HPT(nn.Module):
     """Heterogeneous Pre-trained Transformer: The underlying neural network for HPTPolicy.
@@ -348,14 +361,6 @@ class HPT(nn.Module):
         action = self.heads[domain](features)
         return action
 
-    def generate_actions(self, batch: dict[str, Tensor]) -> tuple[Tensor, tuple[Tensor, Tensor] | tuple[None, None]]:
-        """A forward pass through the HPT to generate actions at test time. Assume inputs have been normalized.
-        """
-        domain = self.config.domain_name
-        features = self.forward_features(batch)
-        action = self.heads[domain](features)
-        return action
-
     def preprocess_tokens(self, domain: str, features: List[torch.Tensor]) -> torch.Tensor:
         """
         Shared modality layers and add modality tokens. Add positional and time embeddings.
@@ -489,7 +494,6 @@ class HPT(nn.Module):
         return torch.cat([data["observation.state"], data["observation.environment_state"]], dim=-1).flatten(
             start_dim=1
         )
-
     def load_trunk(self, path: str):
         """load the trunk part of the model"""
         path = "liruiw/hpt-" + path
