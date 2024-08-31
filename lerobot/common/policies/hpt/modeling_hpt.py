@@ -278,7 +278,7 @@ class HPT(nn.Module):
         self.stems = nn.ModuleDict(self.stems)
         self.heads = nn.ModuleDict(self.heads)
 
-        self.apply(self._init_weights)
+        # self.apply(self._init_weights)
         if self.token_postprocessing == "action_token":
             self.action_tokens = nn.ParameterDict(self.action_tokens)
 
