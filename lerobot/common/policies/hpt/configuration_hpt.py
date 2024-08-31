@@ -75,7 +75,7 @@ class HPTConfig:
         crossattn_dim_head: Dimension of each head in cross-attention modules.
         crossattn_heads: Number of heads in cross-attention.
         crossattn_modality_dropout: Dropout ratio for cross-attention.
-        observation_horizon: Observation horizon.
+        n_obs_steps: Observation horizon.
         random_horizon_masking: Randomize observation input length.
         add_pos_embedding_to_state: Positional embedding for the state.
         stem_num_blocks: Number of blocks for stem transformer's cross and self-attention.
@@ -150,7 +150,7 @@ class HPTConfig:
     crossattn_dim_head: int = 64
     crossattn_heads: int = 8
     crossattn_modality_dropout: float = 0.1
-    observation_horizon: int = 2
+    n_obs_steps: int = 2
     random_horizon_masking: bool = True
     add_pos_embedding_to_state: bool = False
 
@@ -180,9 +180,6 @@ class HPTConfig:
     head_widths: tuple = (256, 128)
 
     # Diffusion Head Network
-    n_obs_steps = 2
-    horizon = 16
-    n_action_steps = 8
     down_dims: tuple[int, ...] = (512, 1024, 2048)
     kernel_size: int = 5
     n_groups: int = 8

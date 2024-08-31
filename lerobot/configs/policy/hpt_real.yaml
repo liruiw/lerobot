@@ -53,12 +53,12 @@ training:
   online_steps_between_rollouts: 1
 
   delta_timestamps:
-    observation.images.cam_right_wrist: "[i / ${fps} for i in range(1 - ${policy.observation_horizon}, 1)]"
-    observation.images.cam_left_wrist: "[i / ${fps} for i in range(1 - ${policy.observation_horizon}, 1)]"
-    observation.images.cam_high: "[i / ${fps} for i in range(1 - ${policy.observation_horizon}, 1)]"
-    observation.images.cam_low: "[i / ${fps} for i in range(1 - ${policy.observation_horizon}, 1)]"
-    observation.state: "[i / ${fps} for i in range(1 - ${policy.observation_horizon}, 1)]"
-    action: "[i / ${fps} for i in range(${policy.action_horizon})]"
+    observation.images.cam_right_wrist: "[i / ${fps} for i in range(1 - ${policy.n_obs_steps}, 1)]"
+    observation.images.cam_left_wrist: "[i / ${fps} for i in range(1 - ${policy.n_obs_steps}, 1)]"
+    observation.images.cam_high: "[i / ${fps} for i in range(1 - ${policy.n_obs_steps}, 1)]"
+    observation.images.cam_low: "[i / ${fps} for i in range(1 - ${policy.n_obs_steps}, 1)]"
+    observation.state: "[i / ${fps} for i in range(1 - ${policy.n_obs_steps}, 1)]"
+    action: "[i / ${fps} for i in range(1 - ${policy.n_obs_steps}, 1 - ${policy.n_obs_steps} + ${policy.action_horizon})]"
 
 
 eval:
@@ -116,7 +116,7 @@ policy:
   crossattn_dim_head: 64
   crossattn_heads: 8
   crossattn_modality_dropout: 0.1
-  observation_horizon: 1
+  n_obs_steps: 1
   random_horizon_masking: True # whether to randomize observation input length
   add_pos_embedding_to_state: False
 
