@@ -25,7 +25,7 @@ training:
   delta_timestamps:
     observation.environment_state: "[i / ${fps} for i in range(1 - ${policy.n_obs_steps}, 1)]"
     observation.state: "[i / ${fps} for i in range(1 - ${policy.n_obs_steps}, 1)]"
-    action: "[i / ${fps} for i in range(1 - ${policy.n_obs_steps}, 1 - ${policy.n_obs_steps} + ${policy.horizon})]"
+    action: "[i / ${fps} for i in range(1 - ${policy.n_obs_steps}, 1 - ${policy.n_obs_steps} + ${policy.action_horizon})]"
 
   drop_n_last_frames: 7
 
@@ -75,7 +75,7 @@ policy:
   crossattn_dim_head: 64
   crossattn_heads: 8
   crossattn_modality_dropout: 0.1
-  observation_horizon: 2
+  n_obs_steps: 2
   random_horizon_masking: False # whether to randomize observation input length
   add_pos_embedding_to_state: False
 
