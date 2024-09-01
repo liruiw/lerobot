@@ -19,25 +19,21 @@ As per Scaling Proprioceptive-Visual Learning with Heterogeneous Pre-trained Tra
 The majority of changes here involve removing unused code, unifying naming, and adding helpful comments.
 """
 
-from collections import deque, defaultdict
+from collections import defaultdict, deque
 from functools import partial
+from typing import Callable, List, Optional, Tuple
 
+import numpy as np
 import torch
 import torch.nn.functional as F  # noqa: N812
+import torchvision
+from einops import rearrange, repeat
 from huggingface_hub import PyTorchModelHubMixin
-from torch import Tensor, nn
+from torch import Tensor, einsum, nn
 
 from lerobot.common.policies.hpt.configuration_hpt import HPTConfig
 from lerobot.common.policies.normalize import Normalize, Unnormalize
-from lerobot.common.policies.utils import populate_queues, get_device_from_parameters
-
-from typing import Callable, List, Optional, Tuple
-import numpy as np
-import torchvision
-from einops import rearrange, repeat
-from torch import Tensor, einsum, nn
-
-
+from lerobot.common.policies.utils import get_device_from_parameters, populate_queues
 
 LOSS = partial(F.smooth_l1_loss, beta=0.05)
 INIT_CONST = 0.02
@@ -87,43 +83,34 @@ class HPTPolicy(
         )
 
         ######################################## debug
-        config.n_action_steps = config.openloop_action_horizon
-        config.horizon = config.action_horizon
-        from ..diffusion.modeling_diffusion import DiffusionModel
-
+        # config.n_action_steps = config.openloop_action_horizon
+        # config.horizon = config.action_horizon
+        # from ..diffusion.modeling_diffusion import DiffusionModel
         # self.diffusion = DiffusionModel(config)
-        self.diffusion = HPT(config)
 
-        self.use_env_state = "observation.environment_state" in config.input_shapes
-        #######################################
+        self.model = HPT(config)
+
         self.reset()
-
 
     def reset(self):
         """This should be called whenever the environment is reset."""
         self._queues = defaultdict(deque, maxlen=self.config.n_obs_steps)
-        for key in self.config.output_shapes.keys():
+        for key in self.config.output_shapes:
             self._queues[key] = deque(maxlen=self.config.n_obs_steps)
-        for key in self.config.input_shapes.keys():
+        for key in self.config.input_shapes:
             self._queues[key] = deque(maxlen=self.config.n_obs_steps)
 
     @torch.no_grad
     def select_action(self, batch: dict[str, Tensor]) -> Tensor:
-        """Select a single action given environment observations.
-        """
+        """Select a single action given environment observations."""
         batch = self.normalize_inputs(batch)
-      
-        # Note: It's important that this happens after stacking the images into a single key.
         self._queues = populate_queues(self._queues, batch)
 
         if len(self._queues["action"]) == 0:
             # stack n latest observations from the queue
             batch = {k: torch.stack(list(self._queues[k]), dim=1) for k in batch if k in self._queues}
-            actions = self.diffusion.generate_actions(batch)
-
-            # TODO(rcadene): make above methods return output dictionary?
+            actions = self.model.generate_actions(batch)[:, : self.config.openloop_action_horizon]
             actions = self.unnormalize_outputs({"action": actions})["action"]
-
             self._queues["action"].extend(actions.transpose(0, 1))
 
         action = self._queues["action"].popleft()
@@ -133,9 +120,10 @@ class HPTPolicy(
         """Run the batch through the model and compute the loss for training or validation."""
         batch = self.normalize_inputs(batch)
         batch = self.normalize_targets(batch)
-        loss = self.diffusion.compute_loss(batch)
+        loss = self.model.compute_loss(batch)
         loss_dict = {"loss": loss}
         return loss_dict
+
 
 class HPT(nn.Module):
     """Heterogeneous Pre-trained Transformer: The underlying neural network for HPTPolicy.
@@ -176,7 +164,6 @@ class HPT(nn.Module):
         self.config = config
         self.use_robot_state = "observation.state" in config.input_shapes
         self.use_images = any(k.startswith("observation.image") for k in config.input_shapes)
-        self.use_env_state = "observation.environment_state" in config.input_shapes
         self.embed_dim = config.embed_dim
         self.no_trunk = config.no_trunk
 
@@ -262,6 +249,7 @@ class HPT(nn.Module):
         elif self.config.head_architecture == "mlp":
             self.heads[domain_name] = MLPHead(
                 input_dim=self.config.head_input_dim,
+                action_horizon=self.config.action_horizon,
                 output_dim=self.config.head_action_dim * self.config.action_horizon,
                 widths=self.config.head_widths,
             )
@@ -348,12 +336,15 @@ class HPT(nn.Module):
         action = self.heads[domain](features)
         return action
 
-    def generate_actions(self, batch: dict[str, Tensor]) -> tuple[Tensor, tuple[Tensor, Tensor] | tuple[None, None]]:
-        """A forward pass through the HPT to generate actions at test time. Assume inputs have been normalized.
-        """
+    def generate_actions(
+        self, batch: dict[str, Tensor]
+    ) -> tuple[Tensor, tuple[Tensor, Tensor] | tuple[None, None]]:
+        """A forward pass through the HPT to generate actions at test time. Assume inputs have been normalized."""
         domain = self.config.domain_name
         features = self.forward_features(batch)
         action = self.heads[domain](features)
+        start = self.config.n_obs_steps - 1
+        action = action[:, start:]
         return action
 
     def preprocess_tokens(self, domain: str, features: List[torch.Tensor]) -> torch.Tensor:
@@ -507,7 +498,6 @@ class HPT(nn.Module):
         return loss
 
 
-
 class MLPHead(nn.Module):
     """Simple MLP based policy head"""
 
@@ -518,11 +508,13 @@ class MLPHead(nn.Module):
         widths: List[int] = (512, 512),
         dropout: bool = False,
         tanh_end: bool = True,
+        action_horizon: int = 1,
         ln: bool = True,
     ) -> None:
         """MLP head on the pooled feature"""
         super().__init__()
         self.input = input
+        self.action_horizon = action_horizon
         modules = [nn.Linear(input_dim, widths[0]), nn.SiLU()]
 
         for i in range(len(widths) - 1):
@@ -539,7 +531,7 @@ class MLPHead(nn.Module):
         self.net = nn.Sequential(*modules)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
+        return self.net(x).view(len(x), self.action_horizon, -1)
 
     def compute_loss(self, x: torch.Tensor, target: dict) -> torch.Tensor:
         target_action = target["action"]
@@ -669,7 +661,6 @@ class PolicyStem(nn.Module):
         # Initial reshape to adapt to token dimensions
         stem_feat = self(x)  # (32, 3, 1, 49, 128)
         stem_feat = stem_feat.reshape(stem_feat.shape[0], -1, stem_feat.shape[-1])  # (32, 147, 128)
-        return stem_feat  # debug
 
         # Replicating tokens for each item in the batch and computing cross-attention
         stem_tokens = self.tokens.repeat(len(stem_feat), 1, 1)  # (32, 16, 128)
