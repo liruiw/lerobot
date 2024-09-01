@@ -240,7 +240,13 @@ class HPT(nn.Module):
                 action_horizon=self.config.action_horizon,
                 action_dim=self.config.head_action_dim,
             )
-
+        elif self.config.head_architecture == "transformer_decoder":
+            self.heads[domain_name] = TransformerDecoder(
+                input_dim=self.config.head_input_dim,
+                action_horizon=self.config.action_horizon,
+                output_dim=self.config.head_action_dim,
+                crossattn_dim_head=self.config.head_crossattn_dim_head,
+            )
         elif self.config.head_architecture == "mlp":
             self.heads[domain_name] = MLPHead(
                 input_dim=self.config.head_input_dim,
@@ -618,8 +624,6 @@ class TransformerDecoder(nn.Module):
         This version uses cross attention and does not require retraining the trunk.
         """
         super().__init__()
-        token_num = action_horizon
-        self.tokens = nn.Parameter(torch.randn(1, token_num, output_dim) * INIT_CONST)
 
         self.cross_attention = CrossAttention(
             input_dim,
@@ -627,8 +631,9 @@ class TransformerDecoder(nn.Module):
             dim_head=crossattn_dim_head,
             dropout=crossattn_modality_dropout,
         )
-        embed_dim = crossattn_dim_head * crossattn_heads
-        self.mlp = nn.Sequential(nn.Linear(input_dim, embed_dim), nn.SiLU(), nn.Linear(embed_dim, output_dim))
+        self.mlp = nn.Sequential(nn.Linear(input_dim, crossattn_dim_head), nn.SiLU())
+        self.head_mlp = nn.Linear(crossattn_dim_head, output_dim)
+        self.tokens = nn.Parameter(torch.randn(1, action_horizon, crossattn_dim_head) * INIT_CONST)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -639,8 +644,13 @@ class TransformerDecoder(nn.Module):
         context = context.reshape(context.shape[0], -1, context.shape[-1])
         # Replicating tokens for each item in the batch and computing cross-attention
         queries = self.tokens.repeat(len(context), 1, 1)
-        out = self.cross_attention(queries, context).view(len(x), -1)
-        return out
+        out = self.cross_attention(queries, context)
+        return self.head_mlp(out)
+
+    def compute_loss(self, x: torch.Tensor, target: dict) -> torch.Tensor:
+        target_action = target["action"]
+        pred_action = self(x).view(target_action.shape)
+        return LOSS(pred_action, target_action)
 
 
 class PolicyStem(nn.Module):
