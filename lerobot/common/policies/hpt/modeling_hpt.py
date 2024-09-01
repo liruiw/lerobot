@@ -90,7 +90,7 @@ class HPTPolicy(
         """This should be called whenever the environment is reset."""
         self._queues = defaultdict(deque, maxlen=self.config.n_obs_steps)
         for key in self.config.output_shapes:
-            self._queues[key] = deque(maxlen=self.config.n_obs_steps)
+            self._queues[key] = deque(maxlen=self.config.n_action_steps)
         for key in self.config.input_shapes:
             self._queues[key] = deque(maxlen=self.config.n_obs_steps)
 
@@ -105,8 +105,9 @@ class HPTPolicy(
             batch = {k: torch.stack(list(self._queues[k]), dim=1) for k in batch if k in self._queues}
             actions = self.model.generate_actions(batch)[:, : self.config.n_action_steps]
             actions = self.unnormalize_outputs({"action": actions})["action"]
+            # import IPython; IPython.embed()
             self._queues["action"].extend(actions.transpose(0, 1))
-            # ("actions:", actions, actions.shape)
+            # print("actions:", actions.mean(dim=[1,2]), actions.std(dim=[1,2]))
 
         action = self._queues["action"].popleft()
         return action
@@ -240,13 +241,14 @@ class HPT(nn.Module):
                 action_horizon=self.config.action_horizon,
                 action_dim=self.config.head_action_dim,
             )
-        elif self.config.head_architecture == "transformer_decoder":
-            self.heads[domain_name] = TransformerDecoder(
-                input_dim=self.config.head_input_dim,
+
+        elif self.config.head_architecture == "ACT":
+            self.heads[domain_name] = ACTHead(
+                config=self.config,
+                embed_dim=self.config.head_input_dim,
                 action_horizon=self.config.action_horizon,
-                output_dim=self.config.head_action_dim,
-                crossattn_dim_head=self.config.head_crossattn_dim_head,
             )
+
         elif self.config.head_architecture == "mlp":
             self.heads[domain_name] = MLPHead(
                 input_dim=self.config.head_input_dim,
@@ -346,6 +348,7 @@ class HPT(nn.Module):
         action = self.heads[domain](features)
         start = self.config.n_obs_steps - 1
         action = action[:, start:]
+
         return action
 
     def preprocess_tokens(self, domain: str, features: List[torch.Tensor]) -> torch.Tensor:
@@ -390,6 +393,8 @@ class HPT(nn.Module):
             return trunk_tokens.max(dim=1)[0]
         elif self.token_postprocessing == "last":
             return trunk_tokens[:, -1]
+        elif self.token_postprocessing == "no-op":
+            return trunk_tokens
 
     def mapped_modality_keys(self, modality: str, data: dict[str, Tensor]) -> bool:
         """Select the data for the given modality"""
@@ -609,48 +614,49 @@ class DiffusionHead(nn.Module):
         return F.mse_loss(pred, target)
 
 
-class TransformerDecoder(nn.Module):
+class ACTHead(nn.Module):
     def __init__(
         self,
-        input_dim: int = 10,
-        output_dim: int = 10,
-        crossattn_modality_dropout: float = 0.1,
-        crossattn_heads: int = 8,
-        crossattn_dim_head: int = 64,
+        config,
+        embed_dim: int = 1024,
         action_horizon: int = 4,
     ) -> None:
         """
         Transformer decoder similar to ACT or Detr head.
-        This version uses cross attention and does not require retraining the trunk.
         """
         super().__init__()
+        from ..act.modeling_act import ACTDecoder
 
-        self.cross_attention = CrossAttention(
-            input_dim,
-            heads=crossattn_heads,
-            dim_head=crossattn_dim_head,
-            dropout=crossattn_modality_dropout,
+        self.config = config
+        self.action_horizon = action_horizon
+        self.decoder = ACTDecoder(config)
+        self.tokens = nn.Parameter(torch.randn(action_horizon, self.config.dim_model) * INIT_CONST)
+        self.head_mlp = nn.Linear(self.config.dim_model, self.config.head_action_dim)
+
+    def forward(self, context: torch.Tensor) -> torch.Tensor:
+        """
+        context: (B, input_dim)
+        """
+        decoder_in = torch.zeros(
+            (self.tokens.shape[0], len(context), self.config.dim_model),
+            dtype=context.dtype,
+            device=context.device,
         )
-        self.mlp = nn.Sequential(nn.Linear(input_dim, crossattn_dim_head), nn.SiLU())
-        self.head_mlp = nn.Linear(crossattn_dim_head, output_dim)
-        self.tokens = nn.Parameter(torch.randn(1, action_horizon, crossattn_dim_head) * INIT_CONST)
+        if len(context.shape) == 2:
+            context = context.unsqueeze(1)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-        x: (B, token_len, input_dim)
-        """
-        context = self.mlp(x)
-        context = context.reshape(context.shape[0], -1, context.shape[-1])
-        # Replicating tokens for each item in the batch and computing cross-attention
-        queries = self.tokens.repeat(len(context), 1, 1)
-        out = self.cross_attention(queries, context)
-        return self.head_mlp(out)
+        decoder_out = self.decoder(
+            decoder_in,  # torch.Size([100, 8, 512])
+            context.transpose(0, 1),  # torch.Size([1, 8, 512])
+            decoder_pos_embed=self.tokens.unsqueeze(1),  # torch.Size([100, 1, 512])
+        )
+        out = self.head_mlp(decoder_out).transpose(0, 1).contiguous()
+        return out
 
     def compute_loss(self, x: torch.Tensor, target: dict) -> torch.Tensor:
         target_action = target["action"]
         pred_action = self(x).view(target_action.shape)
-        return LOSS(pred_action, target_action)
+        return F.l1_loss(pred_action, target_action)
 
 
 class PolicyStem(nn.Module):
