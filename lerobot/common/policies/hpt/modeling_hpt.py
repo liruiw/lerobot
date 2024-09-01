@@ -103,7 +103,7 @@ class HPTPolicy(
         if len(self._queues["action"]) == 0:
             # stack n latest observations from the queue
             batch = {k: torch.stack(list(self._queues[k]), dim=1) for k in batch if k in self._queues}
-            actions = self.model.generate_actions(batch)[:, : self.config.openloop_action_horizon]
+            actions = self.model.generate_actions(batch)[:, : self.config.n_action_steps]
             actions = self.unnormalize_outputs({"action": actions})["action"]
             self._queues["action"].extend(actions.transpose(0, 1))
 

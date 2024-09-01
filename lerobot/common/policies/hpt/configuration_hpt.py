@@ -175,7 +175,7 @@ class HPTConfig:
     head_tanh_end: bool = True
     head_action_dim: int = 14
     action_horizon: int = 8
-    openloop_action_horizon: int = 4
+    n_action_steps: int = 4
     head_dropout: bool = True
     head_widths: tuple = (256, 128)
 
