@@ -533,7 +533,7 @@ class MLPHead(nn.Module):
 
     def compute_loss(self, x: torch.Tensor, target: dict) -> torch.Tensor:
         target_action = target["action"]
-        pred_action = self(x).view(self.target_action.shape)
+        pred_action = self(x).view(target_action.shape)
         return LOSS(pred_action, target_action)
 
 
