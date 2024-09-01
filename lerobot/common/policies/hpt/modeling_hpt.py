@@ -235,7 +235,7 @@ class HPT(nn.Module):
         if self.config.head_architecture == "diffusion":
             self.heads[domain_name] = DiffusionHead(
                 config=self.config,
-                embed_dim=self.config.head_input_dim,
+                embed_dim=self.config.embed_dim,
                 action_horizon=self.config.action_horizon,
                 action_dim=self.config.head_action_dim,
             )
@@ -243,13 +243,13 @@ class HPT(nn.Module):
         elif self.config.head_architecture == "ACT":
             self.heads[domain_name] = ACTHead(
                 config=self.config,
-                embed_dim=self.config.head_input_dim,
+                embed_dim=self.config.embed_dim,
                 action_horizon=self.config.action_horizon,
             )
 
         elif self.config.head_architecture == "mlp":
             self.heads[domain_name] = MLPHead(
-                input_dim=self.config.head_input_dim,
+                input_dim=self.config.embed_dim,
                 action_horizon=self.config.action_horizon,
                 output_dim=self.config.head_action_dim * self.config.action_horizon,
                 widths=self.config.head_widths,
