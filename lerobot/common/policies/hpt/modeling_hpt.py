@@ -243,7 +243,6 @@ class HPT(nn.Module):
         elif self.config.head_architecture == "ACT":
             self.heads[domain_name] = ACTHead(
                 config=self.config,
-                embed_dim=self.config.embed_dim,
                 action_horizon=self.config.action_horizon,
             )
 
@@ -616,7 +615,6 @@ class ACTHead(nn.Module):
     def __init__(
         self,
         config,
-        embed_dim: int = 1024,
         action_horizon: int = 4,
     ) -> None:
         """
@@ -628,15 +626,15 @@ class ACTHead(nn.Module):
         self.config = config
         self.action_horizon = action_horizon
         self.decoder = ACTDecoder(config)
-        self.tokens = nn.Parameter(torch.randn(action_horizon, self.config.dim_model) * INIT_CONST)
-        self.head_mlp = nn.Linear(self.config.dim_model, self.config.head_action_dim)
+        self.tokens = nn.Parameter(torch.randn(action_horizon, self.config.embed_dim) * INIT_CONST)
+        self.head_mlp = nn.Linear(self.config.embed_dim, self.config.head_action_dim)
 
     def forward(self, context: torch.Tensor) -> torch.Tensor:
         """
         context: (B, input_dim)
         """
         decoder_in = torch.zeros(
-            (self.tokens.shape[0], len(context), self.config.dim_model),
+            (self.tokens.shape[0], len(context), self.config.embed_dim),
             dtype=context.dtype,
             device=context.device,
         )
