@@ -13,7 +13,7 @@ override_dataset_stats:
 training:
   offline_steps: 100000
   online_steps: 0
-  eval_freq: 10000 # 20000
+  eval_freq: 1000 # 20000
   save_freq: 10000 # 20000
   save_checkpoint: true
 
@@ -90,22 +90,22 @@ policy:
 
   vision_input_dim: 512 # need modifications based on the vision encoders
   vision_output_dim: "${policy.embed_dim}"
-  vision_widths: [512, 128]
+  vision_widths: [512, 512]
   vision_num_of_copy: 1
 
   state_input_dim: "${env.state_dim}" # ovewrite based on the dataset
   state_output_dim: "${policy.embed_dim}"
-  state_widths: [512, 128]
+  state_widths: [512, 512]
   state_num_of_copy: 1
 
-  # head
+  # MLP Head
   action_horizon: 100 # tuned for aloha
   openloop_action_horizon: 50
   head_input_dim: "${policy.embed_dim}"
   head_tanh_end: True # normalized action output
   head_action_dim: "${env.action_dim}" # overwrite based on dataset
   head_dropout: True
-  head_widths: [512, 256, 128]
+  head_widths: [1024, 512, 256]
 
   # Diffusion Head
   down_dims: [256, 512, 1024]
