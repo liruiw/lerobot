@@ -42,12 +42,12 @@ policy:
   domain_name: "aloha_sim_insertion_human"
   vision_backbone: "resnet18"
   pretrained_backbone_weights: "ResNet18_Weights.IMAGENET1K_V1"
-  head_architecture: "diffusion"
+  head_architecture: "mlp"
 
   # Input / output structure.
   input_shapes:
     # TODO(rcadene, alexander-soare): add variables for height and width from the dataset/env?
-    observation.images.top: [3, 96, 96]
+    observation.images.top: [3, 480, 640]
     observation.state: ["${env.state_dim}"]
   output_shapes:
     action: ["${env.action_dim}"]
@@ -55,9 +55,9 @@ policy:
   # Normalization / Unnormalization
   input_normalization_modes:
     observation.images.top: mean_std
-    observation.state: min_max
+    observation.state: mean_std
   output_normalization_modes:
-    action: min_max
+    action: mean_std
 
   # full policy configurations.
   # HPT trunk config
@@ -106,26 +106,3 @@ policy:
   head_action_dim: "${env.action_dim}" # overwrite based on dataset
   head_dropout: True
   head_widths: [1024, 512, 256]
-
-  # Diffusion Head
-  down_dims: [256, 512, 1024]
-  kernel_size: 5
-  n_groups: 8
-  diffusion_step_embed_dim: 128
-  use_film_scale_modulation: True
-
-  # Noise scheduler.
-  noise_scheduler_type: DDIM
-  num_train_timesteps: 100
-  beta_schedule: squaredcos_cap_v2
-  beta_start: 0.0001
-  beta_end: 0.02
-  prediction_type: epsilon # epsilon / sample
-  clip_sample: True
-  clip_sample_range: 1.0
-
-  # Inference
-  num_inference_steps: 10  # if not provided, defaults to `num_train_timesteps`
-
-  # Loss computation
-  do_mask_loss_for_padding: false
