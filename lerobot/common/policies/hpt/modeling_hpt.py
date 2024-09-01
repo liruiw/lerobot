@@ -666,10 +666,10 @@ class PolicyStem(nn.Module):
     def init_cross_attn(self, stem_spec, modality: str):
         """initialize cross attention module and the learnable tokens"""
         token_num = getattr(stem_spec, modality + "_crossattn_latent")
-        self.tokens = nn.Parameter(torch.randn(1, token_num, stem_spec.modality_embed_dim) * INIT_CONST)
+        self.tokens = nn.Parameter(torch.randn(1, token_num, stem_spec.embed_dim) * INIT_CONST)
 
         self.cross_attention = CrossAttention(
-            stem_spec.modality_embed_dim,
+            stem_spec.embed_dim,
             heads=stem_spec.crossattn_heads,
             dim_head=stem_spec.crossattn_dim_head,
             dropout=stem_spec.crossattn_modality_dropout,
