@@ -19,7 +19,7 @@ As per Scaling Proprioceptive-Visual Learning with Heterogeneous Pre-trained Tra
 The majority of changes here involve removing unused code, unifying naming, and adding helpful comments.
 """
 
-from collections import defaultdict, deque
+from collections import deque
 from functools import partial
 from typing import Callable, List, Optional, Tuple
 
@@ -88,7 +88,7 @@ class HPTPolicy(
 
     def reset(self):
         """This should be called whenever the environment is reset."""
-        self._queues = defaultdict(deque, maxlen=self.config.n_obs_steps)
+        self._queues = {}
         for key in self.config.output_shapes:
             self._queues[key] = deque(maxlen=self.config.n_action_steps)
         for key in self.config.input_shapes:
@@ -105,9 +105,7 @@ class HPTPolicy(
             batch = {k: torch.stack(list(self._queues[k]), dim=1) for k in batch if k in self._queues}
             actions = self.model.generate_actions(batch)[:, : self.config.n_action_steps]
             actions = self.unnormalize_outputs({"action": actions})["action"]
-            # import IPython; IPython.embed()
             self._queues["action"].extend(actions.transpose(0, 1))
-            # print("actions:", actions.mean(dim=[1,2]), actions.std(dim=[1,2]))
 
         action = self._queues["action"].popleft()
         return action
