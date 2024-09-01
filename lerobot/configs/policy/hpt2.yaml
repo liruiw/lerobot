@@ -47,7 +47,7 @@ policy:
   # Input / output structure.
   input_shapes:
     # TODO(rcadene, alexander-soare): add variables for height and width from the dataset/env?
-    observation.images.top: [3, 480, 640]
+    observation.images.top: [3, 96, 96]
     observation.state: ["${env.state_dim}"]
   output_shapes:
     action: ["${env.action_dim}"]

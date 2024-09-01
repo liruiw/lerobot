@@ -87,7 +87,7 @@ policy:
 
   # head
   action_horizon: 16
-  openloop_action_horizon: 8
+  n_action_steps: 8
   head_input_dim: "${policy.embed_dim}"
   head_tanh_end: True # normalized action output
   head_action_dim: "${env.action_dim}" # overwrite based on dataset
