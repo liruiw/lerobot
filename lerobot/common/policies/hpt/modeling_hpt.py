@@ -184,7 +184,7 @@ class HPT(nn.Module):
         if len(config.load_pretrained) > 0:
             self.load_trunk(config.load_pretrained)
 
-    def _init_weights(self, m):
+    def _init_weights(self, m: nn.Module):
         """
         Weight initialization for transformer
         """
@@ -196,14 +196,14 @@ class HPT(nn.Module):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
-    def init_encoders(self, modality, encoder):
+    def init_encoders(self, modality: str, encoder: nn.Module):
         """
         Add image/language encoders into the policy parameters in the case of joint finetuning
         """
         self.encoders[modality] = encoder
         self.encoders = nn.ModuleDict(self.encoders)
 
-    def init_domain_stem(self, domain_name):
+    def init_domain_stem(self, domain_name: str):
         """
         Initialize an observation stem for each domain
         """
@@ -227,7 +227,7 @@ class HPT(nn.Module):
                 torch.randn(1, self.action_horizon, self.embed_dim) * INIT_CONST
             )
 
-    def init_domain_head(self, domain_name):
+    def init_domain_head(self, domain_name: str):
         """initialize an action head for each domain, along with normalizer"""
         self.head_spec = self.config
         self.action_horizon = self.config.action_horizon
@@ -348,7 +348,7 @@ class HPT(nn.Module):
 
         return action
 
-    def preprocess_tokens(self, domain: str, features: List[torch.Tensor]) -> torch.Tensor:
+    def preprocess_tokens(self, domain: str, features: List[Tensor]) -> Tensor:
         """
         Shared modality layers and add modality tokens. Add positional and time embeddings.
         """
@@ -362,7 +362,7 @@ class HPT(nn.Module):
         tokens = tokens + position_tokens
         return tokens
 
-    def get_position_embedding(self, feature: torch.Tensor) -> torch.Tensor:
+    def get_position_embedding(self, feature: Tensor) -> Tensor:
         """
         Add positional embedding to the features
         """
@@ -370,16 +370,16 @@ class HPT(nn.Module):
         pos_embedding = pos_embedding.repeat((1, 1, 1)).to(feature.device)
         return pos_embedding
 
-    def postprocess_tokens(self, trunk_tokens: torch.Tensor) -> torch.Tensor:
+    def postprocess_tokens(self, trunk_tokens: Tensor) -> Tensor:
         """
         Postprocesses the trunk tokens to obtain the final features.
 
         Args:
-            trunk_tokens (torch.Tensor): The trunk tokens of shape (N, L, D), where N is the batch size,
+            trunk_tokens (Tensor): The trunk tokens of shape (N, L, D), where N is the batch size,
                                         L is the sequence length, and D is the token dimension.
 
         Returns:
-            torch.Tensor: The postprocessed tokens of shape (N, D), where N is the batch size and D is the
+            Tensor: The postprocessed tokens of shape (N, D), where N is the batch size and D is the
                           final feature dimension.
         """
         if self.token_postprocessing == "mean":
@@ -393,7 +393,7 @@ class HPT(nn.Module):
         elif self.token_postprocessing == "no-op":
             return trunk_tokens
 
-    def mapped_modality_keys(self, modality: str, data: dict[str, Tensor]) -> bool:
+    def mapped_modality_keys(self, modality: str, data: dict[str, Tensor]) -> str | Tensor:
         """Select the data for the given modality"""
         selected_keys = []
         selected_data = []
@@ -458,7 +458,7 @@ class HPT(nn.Module):
 
         return feats
 
-    def forward_features(self, data: dict) -> torch.Tensor:
+    def forward_features(self, data: dict) -> Tensor:
         """
         Compute the features for the given domain and data.
         Args:
@@ -489,7 +489,7 @@ class HPT(nn.Module):
         download_path = huggingface_hub.snapshot_download(path)
         self.trunk.load_state_dict(torch.load(download_path + "/trunk.pth"))
 
-    def compute_loss(self, batch):
+    def compute_loss(self, batch: dict[str, Tensor]) -> Tensor:
         """Compute the loss for the training loop forward pass."""
         domain = self.config.domain_name
         features = self.forward_features(batch)
@@ -529,10 +529,10 @@ class MLPHead(nn.Module):
             modules.append(nn.Tanh())
         self.net = nn.Sequential(*modules)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: Tensor) -> Tensor:
         return self.net(x).view(len(x), self.action_horizon, -1)
 
-    def compute_loss(self, x: torch.Tensor, target: dict) -> torch.Tensor:
+    def compute_loss(self, x: Tensor, target: dict) -> Tensor:
         target_action = target["action"]
         pred_action = self(x).view(target_action.shape)
         return LOSS(pred_action, target_action)
@@ -593,10 +593,10 @@ class DiffusionHead(nn.Module):
             trajectory = scheduler.step(model_output, t, trajectory, generator=generator).prev_sample
         return trajectory
 
-    def forward(self, global_cond: torch.Tensor):
+    def forward(self, global_cond: Tensor):
         return self.conditional_sample(global_cond)
 
-    def compute_loss(self, global_cond: torch.Tensor, data: torch.Tensor) -> torch.Tensor:
+    def compute_loss(self, global_cond: Tensor, data: Tensor) -> Tensor:
         trajectory = data["action"].reshape(
             (len(global_cond), self.action_horizon, self.action_dim)
         )  # Reshape the action tensor
@@ -629,7 +629,7 @@ class ACTHead(nn.Module):
         self.tokens = nn.Parameter(torch.randn(action_horizon, self.config.embed_dim) * INIT_CONST)
         self.head_mlp = nn.Linear(self.config.embed_dim, self.config.head_action_dim)
 
-    def forward(self, context: torch.Tensor) -> torch.Tensor:
+    def forward(self, context: Tensor) -> Tensor:
         """
         context: (B, input_dim)
         """
@@ -649,7 +649,7 @@ class ACTHead(nn.Module):
         out = self.head_mlp(decoder_out).transpose(0, 1).contiguous()
         return out
 
-    def compute_loss(self, x: torch.Tensor, target: dict) -> torch.Tensor:
+    def compute_loss(self, x: Tensor, target: dict) -> Tensor:
         target_action = target["action"]
         pred_action = self(x).view(target_action.shape)
         return F.l1_loss(pred_action, target_action)
@@ -677,7 +677,7 @@ class PolicyStem(nn.Module):
     def device(self):
         return next(self.parameters()).device
 
-    def compute_latent(self, x: torch.Tensor) -> torch.Tensor:
+    def compute_latent(self, x: Tensor) -> Tensor:
         """
         Computes the latent representations of input data by attention.
 
@@ -739,7 +739,7 @@ class MLPStem(PolicyStem):
         if self.num_of_copy > 1:
             self.net = nn.ModuleList([nn.Sequential(*modules) for _ in range(num_of_copy)])
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: Tensor) -> Tensor:
         """
         Performs a forward pass of the model.
         Args:
@@ -785,19 +785,17 @@ class CrossAttention(nn.Module):
 
         self.dropout = nn.Dropout(dropout)
 
-    def forward(
-        self, x: torch.Tensor, context: torch.Tensor, mask: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
+    def forward(self, x: Tensor, context: Tensor, mask: Optional[Tensor] = None) -> Tensor:
         """
         Forward pass of the CrossAttention module.
 
         Args:
-            x (torch.Tensor): The query input tensor.
-            context (torch.Tensor): The context input tensor.
-            mask (torch.Tensor, optional): The attention mask tensor. Defaults to None.
+            x (Tensor): The query input tensor.
+            context (Tensor): The context input tensor.
+            mask (Tensor, optional): The attention mask tensor. Defaults to None.
 
         Returns:
-            torch.Tensor: The output tensor.
+            Tensor: The output tensor.
         """
         h = self.heads
         q = self.to_q(x)
@@ -842,7 +840,7 @@ class Mlp(nn.Module):
         self.fc2 = nn.Linear(hidden_features, out_features)
         self.drop = nn.Dropout(drop)
 
-    def forward(self, x):
+    def forward(self, x: Tensor) -> Tensor:
         x = self.fc1(x)
         x = self.act(x)
         x = self.drop(x)
@@ -870,10 +868,6 @@ class BlockWithMasking(nn.Module):
             attn_target, nn.Module
         ), "attn_target should be a Callable. Otherwise attn_target is shared across blocks!"
         self.attn = attn_target()
-        # if drop_path > 0.0:
-        #     requires timm package
-        #     self.drop_path = DropPath(drop_path)
-        # else:
         self.drop_path = nn.Identity()
         self.norm_1 = norm_layer(dim)
         mlp_hidden_dim = int(mlp_ratio * dim)
@@ -902,7 +896,7 @@ class BlockWithMasking(nn.Module):
                 requires_grad=True,
             )
 
-    def forward(self, x: torch.Tensor, attn_mask: torch.Tensor):
+    def forward(self, x: Tensor, attn_mask: Tensor) -> Tensor:
         if self.layer_scale_type is None:
             x = x + self.drop_path(self.attn(self.norm_1(x), attn_mask))
             x = x + self.drop_path(self.mlp(self.norm_2(x)))
@@ -913,7 +907,7 @@ class BlockWithMasking(nn.Module):
 
 
 class MultiheadAttention(nn.MultiheadAttention):
-    def forward(self, x: torch.Tensor, attn_mask: torch.Tensor):
+    def forward(self, x: Tensor, attn_mask: Tensor) -> Tensor:
         return super().forward(x, x, x, need_weights=False, attn_mask=attn_mask)[0]
 
 
@@ -971,7 +965,7 @@ class SimpleTransformer(nn.Module):
         self.weight_init_style = weight_init_style
         self.apply(self._init_weights)
 
-    def forward(self, tokens: torch.Tensor, attn_mask: torch.Tensor = None):
+    def forward(self, tokens: Tensor, attn_mask: Optional[Tensor] = None) -> Tensor:
         """
         Inputs
         - tokens: data of shape N x L x D (or L x N x D depending on the attention implementation)
@@ -1012,16 +1006,16 @@ class EinOpsRearrange(nn.Module):
         self.rearrange_expr = rearrange_expr
         self.kwargs = kwargs
 
-    def forward(self, x):
-        assert isinstance(x, torch.Tensor)
+    def forward(self, x: Tensor) -> Tensor:
+        assert isinstance(x, Tensor)
         return rearrange(x, self.rearrange_expr, **self.kwargs)
 
 
-def get_sinusoid_encoding_table(position_start, position_end, d_hid):
+def get_sinusoid_encoding_table(position_start: int, position_end: int, d_hid: int) -> Tensor:
     """Sinusoid position encoding table"""
 
     # TODO: make it with torch instead of numpy
-    def get_position_angle_vec(position):
+    def get_position_angle_vec(position: int):
         return [position / np.power(10000, 2 * (hid_j // 2) / d_hid) for hid_j in range(d_hid)]
 
     sinusoid_table = np.array(
@@ -1049,7 +1043,7 @@ class ResNet(PolicyStem):
         self.input = input
         self.out_dim = output_dim
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: Tensor) -> Tensor:
         """
         Performs a forward pass of the model.
         Args:
