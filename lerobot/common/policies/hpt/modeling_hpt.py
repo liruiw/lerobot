@@ -106,6 +106,7 @@ class HPTPolicy(
             actions = self.model.generate_actions(batch)[:, : self.config.n_action_steps]
             actions = self.unnormalize_outputs({"action": actions})["action"]
             self._queues["action"].extend(actions.transpose(0, 1))
+            # ("actions:", actions, actions.shape)
 
         action = self._queues["action"].popleft()
         return action
@@ -600,6 +601,46 @@ class DiffusionHead(nn.Module):
         pred = self.model(noisy_trajectory, timesteps, global_cond=global_cond)
         target = noise
         return F.mse_loss(pred, target)
+
+
+class TransformerDecoder(nn.Module):
+    def __init__(
+        self,
+        input_dim: int = 10,
+        output_dim: int = 10,
+        crossattn_modality_dropout: float = 0.1,
+        crossattn_heads: int = 8,
+        crossattn_dim_head: int = 64,
+        action_horizon: int = 4,
+    ) -> None:
+        """
+        Transformer decoder similar to ACT or Detr head.
+        This version uses cross attention and does not require retraining the trunk.
+        """
+        super().__init__()
+        token_num = action_horizon
+        self.tokens = nn.Parameter(torch.randn(1, token_num, output_dim) * INIT_CONST)
+
+        self.cross_attention = CrossAttention(
+            input_dim,
+            heads=crossattn_heads,
+            dim_head=crossattn_dim_head,
+            dropout=crossattn_modality_dropout,
+        )
+        embed_dim = crossattn_dim_head * crossattn_heads
+        self.mlp = nn.Sequential(nn.Linear(input_dim, embed_dim), nn.SiLU(), nn.Linear(embed_dim, output_dim))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+        x: (B, token_len, input_dim)
+        """
+        context = self.mlp(x)
+        context = context.reshape(context.shape[0], -1, context.shape[-1])
+        # Replicating tokens for each item in the batch and computing cross-attention
+        queries = self.tokens.repeat(len(context), 1, 1)
+        out = self.cross_attention(queries, context).view(len(x), -1)
+        return out
 
 
 class PolicyStem(nn.Module):
