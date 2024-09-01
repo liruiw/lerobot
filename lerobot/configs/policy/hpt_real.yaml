@@ -124,10 +124,10 @@ policy:
   image_crossattn_latent: 16
   state_crossattn_latent: 16
 
-  vision_input_dim: 512 # need modifications based on the vision encoders
-  vision_output_dim: "${policy.embed_dim}"
-  vision_widths: [128]
-  vision_num_of_copy: 1
+  image_input_dim: 512 # need modifications based on the vision encoders
+  image_output_dim: "${policy.embed_dim}"
+  image_widths: [128]
+  image_num_of_copy: 1
 
   state_input_dim: "${env.state_dim}" # ovewrite based on the dataset
   state_output_dim: "${policy.embed_dim}"
