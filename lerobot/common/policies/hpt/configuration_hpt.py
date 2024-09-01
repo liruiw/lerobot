@@ -201,8 +201,14 @@ class HPTConfig:
     # Loss computation
     do_mask_loss_for_padding: bool = False
 
-    # TransformerDecoder Head
-    head_crossattn_dim_head: int = 64
+    # ACT Head
+    dim_model: int = 256
+    n_heads: int = 8
+    dim_feedforward: int = 3200
+    feedforward_activation: str = "relu"
+    n_decoder_layers: int = 1
+    dropout: float = 0.1
+    pre_norm: bool = False
 
     def __post_init__(self):
         """Input validation (not exhaustive)."""
