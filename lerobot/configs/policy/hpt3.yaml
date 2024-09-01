@@ -40,7 +40,7 @@ policy:
   domain_name: "aloha_sim_insertion_human"
   vision_backbone: "resnet18"
   pretrained_backbone_weights: "ResNet18_Weights.IMAGENET1K_V1"
-  head_architecture: "mlp"
+  head_architecture: "transformer_decoder"
 
   # Input / output structure.
   input_shapes:
@@ -99,8 +99,5 @@ policy:
   # CrossAttention Head
   action_horizon: 100 # tuned for aloha
   n_action_steps: 50
-  head_input_dim: "${policy.embed_dim}"
-  head_tanh_end: False # normalized action output
   head_action_dim: "${env.action_dim}" # overwrite based on dataset
-  head_dropout: True
-  head_widths: [1024, 512, 256]
+  head_crossattn_dim_head: "${policy.embed_dim}"

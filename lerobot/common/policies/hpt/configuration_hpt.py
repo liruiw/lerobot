@@ -201,6 +201,9 @@ class HPTConfig:
     # Loss computation
     do_mask_loss_for_padding: bool = False
 
+    # TransformerDecoder Head
+    head_crossattn_dim_head: int = 64
+
     def __post_init__(self):
         """Input validation (not exhaustive)."""
         if (
@@ -208,10 +211,3 @@ class HPTConfig:
             and "observation.environment_state" not in self.input_shapes
         ):
             raise ValueError("You must provide at least one image or the environment state among the inputs.")
-
-        if self.output_normalization_modes != {"action": "min_max"}:
-            raise ValueError(
-                "HPT assumes the action space dimensions to all be in [-1, 1]. Therefore it is strongly "
-                f"advised that you stick with the default. See {self.__class__.__name__} docstring for more "
-                "information."
-            )
