@@ -102,7 +102,7 @@ policy:
   head_action_dim: "${env.action_dim}" # overwrite based on dataset
 
   # ACT Head
-  dim_model: 256
+  dim_model: "${policy.embed_dim}"
   n_heads: 8
   dim_feedforward: 3200
   feedforward_activation: "relu"
