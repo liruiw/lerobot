@@ -38,6 +38,7 @@ from lerobot.common.policies.utils import get_device_from_parameters, populate_q
 LOSS = partial(F.smooth_l1_loss, beta=0.05)
 INIT_CONST = 0.02
 _LAYER_NORM = partial(nn.LayerNorm, eps=1e-6)
+DEBUG = False
 
 
 class HPTPolicy(
@@ -81,12 +82,6 @@ class HPTPolicy(
         self.unnormalize_outputs = Unnormalize(
             config.output_shapes, config.output_normalization_modes, dataset_stats
         )
-
-        ######################################## debug
-        # config.n_action_steps = config.openloop_action_horizon
-        # config.horizon = config.action_horizon
-        # from ..diffusion.modeling_diffusion import DiffusionModel
-        # self.diffusion = DiffusionModel(config)
 
         self.model = HPT(config)
 
@@ -241,7 +236,9 @@ class HPT(nn.Module):
         if self.config.head_architecture == "diffusion":
             self.heads[domain_name] = DiffusionHead(
                 config=self.config,
-                embed_dim=self.config.state_input_dim * self.config.n_obs_steps,  # head_input_dim,
+                embed_dim=self.config.state_input_dim * self.config.n_obs_steps
+                if DEBUG
+                else self.config.head_input_dim,
                 action_horizon=self.config.action_horizon,
                 action_dim=self.config.head_action_dim,
             )
@@ -462,24 +459,25 @@ class HPT(nn.Module):
             domain (str): The domain of the data.
             data (Tensor): The input data.
         """
-        # domain = self.config.domain_name
+        if not DEBUG:
+            domain = self.config.domain_name
 
-        # stem pass
-        # self.stem_tokens = self.stem_process(domain, data)
+            # stem pass
+            self.stem_tokens = self.stem_process(domain, data)
 
-        # combine tokens
-        # self.trunk_tokens = self.preprocess_tokens(domain, self.stem_tokens)
+            # combine tokens
+            self.trunk_tokens = self.preprocess_tokens(domain, self.stem_tokens)
 
-        # trunk pass
-        # if not self.no_trunk:
-        #     self.trunk_tokens = self.trunk["trunk"](self.trunk_tokens)
+            # trunk pass
+            if not self.no_trunk:
+                self.trunk_tokens = self.trunk["trunk"](self.trunk_tokens)
 
-        # pooling the features
-        # return self.postprocess_tokens(self.trunk_tokens)
-
-        return torch.cat([data["observation.state"], data["observation.environment_state"]], dim=-1).flatten(
-            start_dim=1
-        )
+            # pooling the features
+            return self.postprocess_tokens(self.trunk_tokens)
+        else:
+            return torch.cat(
+                [data["observation.state"], data["observation.environment_state"]], dim=-1
+            ).flatten(start_dim=1)
 
     def load_trunk(self, path: str):
         """load the trunk part of the model"""
