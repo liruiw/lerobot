@@ -181,8 +181,12 @@ class HPT(nn.Module):
         self.init_domain_stem(self.config.domain_name)
         self.init_domain_head(self.config.domain_name)
         self.finalize_modules()
+
         if len(config.load_pretrained) > 0:
             self.load_trunk(config.load_pretrained)
+
+        if config.freeze_trunk:
+            self.freeze_trunk()
 
     def _init_weights(self, m: nn.Module):
         """
@@ -488,6 +492,20 @@ class HPT(nn.Module):
 
         download_path = huggingface_hub.snapshot_download(path)
         self.trunk.load_state_dict(torch.load(download_path + "/trunk.pth"))
+
+    def freeze_trunk(self, num_layers: int = 0):
+        """freeze the trunk parameters in the last num_layers"""
+        layers = list(self.trunk["trunk"].children())
+        for layer in layers[-num_layers:]:
+            for param in layer.parameters():
+                param.requires_grad = False
+
+    def unfreeze_trunk(self, num_layers: int = 0):
+        """unfreeze the trunk parameters in the last num_layers"""
+        layers = list(self.trunk["trunk"].children())
+        for layer in layers[-num_layers:]:
+            for param in layer.parameters():
+                param.requires_grad = True
 
     def compute_loss(self, batch: dict[str, Tensor]) -> Tensor:
         """Compute the loss for the training loop forward pass."""
