@@ -486,12 +486,22 @@ class HPT(nn.Module):
 
     def load_trunk(self, path: str):
         """load the trunk part of the model"""
+
+        def module_mean_param(module):
+            def maybe_mean(x):
+                return float(torch.abs(x).mean()) if x is not None else 0
+
+            max_data = np.mean([(maybe_mean(param.data)) for name, param in module.named_parameters()])
+            return max_data
+
         path = "liruiw/hpt-" + path
         print(f"Loading trunk from {path}")
         import huggingface_hub
 
         download_path = huggingface_hub.snapshot_download(path)
+        print(f"before loading trunk: {module_mean_param(self.trunk)}")
         self.trunk.load_state_dict(torch.load(download_path + "/trunk.pth"))
+        print(f"after loading trunk: {module_mean_param(self.trunk)}")
 
     def freeze_trunk(self, num_layers: int = 0):
         """freeze the trunk parameters in the last num_layers"""

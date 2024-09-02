@@ -160,6 +160,7 @@ class HPTConfig:
     drop_path: float = 0.1
     no_trunk: bool = False
     load_pretrained: bool = False
+    freeze_trunk: bool = False
 
     # Stem network (projectors) for different modalities
     modalities: tuple = ("image", "state")
