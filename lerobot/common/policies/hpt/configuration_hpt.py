@@ -166,6 +166,7 @@ class HPTConfig:
     freeze_trunk: bool = False
 
     # Stem network (projectors) for different modalities
+    freeze_encoders: bool = False
     modalities: tuple = ("image", "state")
     modality_embed_dim: int = 256
     normalize_state: bool = True
@@ -177,30 +178,30 @@ class HPTConfig:
     random_horizon_masking: bool = True
     add_pos_embedding_to_state: bool = False
 
-    # cross attention tokens
+    # Cross attention tokens
     image_crossattn_latent: int = 16
     state_crossattn_latent: int = 16
 
-    # modality: image
+    # Modality: image
     image_input_dim: int = 512
     image_output_dim: int = 256
     image_widths: tuple = (128,)
     image_num_of_copy: int = 1
 
-    # modality: state
+    # Modality: state
     state_input_dim: int = 14
     state_output_dim: int = 256
     state_widths: tuple = (128,)
     state_num_of_copy: int = 1
 
-    # MLP Head network
+    # MLP Head
     head_input_dim: int = 256
     head_tanh_end: bool = True
     head_action_dim: int = 14
     head_dropout: bool = True
     head_widths: tuple = (256, 128)
 
-    # Diffusion Head Network
+    # Diffusion Head
     down_dims: tuple[int, ...] = (512, 1024, 2048)
     kernel_size: int = 5
     n_groups: int = 8
