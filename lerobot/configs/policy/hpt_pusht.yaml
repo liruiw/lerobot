@@ -23,8 +23,8 @@ training:
   save_freq: 20000 # 20000
   save_checkpoint: false
 
-  batch_size: 8
-  lr: 1.0e-5
+  batch_size: 64
+  lr: 1.0e-4
   lr_scheduler: cosine
   lr_warmup_steps: 500
   adam_betas: [0.95, 0.999]
@@ -34,7 +34,11 @@ training:
   online_steps_between_rollouts: 1
 
   delta_timestamps:
+    observation.image: "[i / ${fps} for i in range(1 - ${policy.n_obs_steps}, 1)]"
+    observation.state: "[i / ${fps} for i in range(1 - ${policy.n_obs_steps}, 1)]"
     action: "[i / ${fps} for i in range(1 - ${policy.n_obs_steps}, 1 - ${policy.n_obs_steps} + ${policy.action_chunk_size})]"
+
+  drop_n_last_frames: 7  # ${policy.horizon} - ${policy.n_action_steps} - ${policy.n_obs_steps} + 1
 
 eval:
   n_episodes: 50 # 50
@@ -47,6 +51,9 @@ policy:
   vision_backbone: "resnet18"
   pretrained_backbone_weights: "ResNet18_Weights.IMAGENET1K_V1"
   head_architecture: "diffusion"
+  action_chunk_size: 16 # tuned for aloha
+  n_action_steps: 8
+  n_obs_steps: 2
 
   # Input / output structure.
   input_shapes:
@@ -87,7 +94,6 @@ policy:
   crossattn_dim_head: 64
   crossattn_heads: 8
   crossattn_modality_dropout: 0.1
-  n_obs_steps: 1
   random_horizon_masking: False # whether to randomize observation input length
   add_pos_embedding_to_state: False
 
@@ -105,8 +111,6 @@ policy:
   state_num_of_copy: 1
 
   # MLP Head
-  action_chunk_size: 100 # tuned for aloha
-  n_action_steps: 100
   head_input_dim: "${policy.embed_dim}"
   head_tanh_end: True # normalized action output
   head_action_dim: "${env.action_dim}" # overwrite based on dataset
