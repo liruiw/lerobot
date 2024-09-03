@@ -252,7 +252,6 @@ class HPT(nn.Module):
                 embed_dim=embed_dim,
                 num_blocks=num_blocks,
                 ffn_dropout_rate=0.0,
-                drop_path_rate=drop_path,
                 attn_target=partial(
                     MultiheadAttention,
                     embed_dim=embed_dim,
