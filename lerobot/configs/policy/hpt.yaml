@@ -45,14 +45,15 @@ policy:
   # Input / output structure.
   input_shapes:
     # TODO(rcadene, alexander-soare): add variables for height and width from the dataset/env?
-    observation.images: [3, 480, 640]
+    # change to observation.images.top for aloha
+    observation.image: [3, 480, 640]
     observation.state: ["${env.state_dim}"]
   output_shapes:
     action: ["${env.action_dim}"]
 
   # Normalization / Unnormalization
   input_normalization_modes:
-    observation.images: mean_std
+    observation.image: mean_std
     observation.state: min_max
   output_normalization_modes:
     action: min_max
