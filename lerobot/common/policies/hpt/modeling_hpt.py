@@ -244,8 +244,8 @@ class HPT(nn.Module):
                 action_dim=self.config.head_action_dim,
             )
 
-        elif self.config.head_architecture == "ACT":
-            self.heads[domain_name] = ACTHead(
+        elif self.config.head_architecture == "transformer":
+            self.heads[domain_name] = TransformerHead(
                 config=self.config,
                 action_horizon=self.config.action_horizon,
             )
@@ -639,14 +639,14 @@ class DiffusionHead(nn.Module):
         return F.mse_loss(pred, target)
 
 
-class ACTHead(nn.Module):
+class TransformerHead(nn.Module):
     def __init__(
         self,
         config,
         action_horizon: int = 4,
     ) -> None:
         """
-        Transformer decoder similar to ACT or Detr head.
+        Transformer decoder similar to ACT head.
         """
         super().__init__()
         from ..act.modeling_act import ACTDecoder
@@ -670,9 +670,9 @@ class ACTHead(nn.Module):
             context = context.unsqueeze(1)
 
         decoder_out = self.decoder(
-            decoder_in,  # torch.Size([100, 8, 512])
-            context.transpose(0, 1),  # torch.Size([1, 8, 512])
-            decoder_pos_embed=self.tokens.unsqueeze(1),  # torch.Size([100, 1, 512])
+            decoder_in,  # [100, 8, 512]
+            context.transpose(0, 1),  #  [1, 8, 512]
+            decoder_pos_embed=self.tokens.unsqueeze(1),  #  [100, 1, 512]
         )
         out = self.head_mlp(decoder_out).transpose(0, 1).contiguous()
         return out
@@ -771,8 +771,7 @@ class MLPStem(PolicyStem):
         """
         Performs a forward pass of the model.
         Args:
-            x: Image tensor with shape [B, T, N, 3, H, W] representing the batch size,
-            horizon, instance (e.g. num of views)
+            x: Image tensor with shape [B, T, N, 3, H, W]
         Returns:
             Flatten tensor with shape [B, M, 512]
         """
