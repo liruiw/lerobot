@@ -58,7 +58,7 @@ training:
     observation.images.cam_high: "[i / ${fps} for i in range(1 - ${policy.n_obs_steps}, 1)]"
     observation.images.cam_low: "[i / ${fps} for i in range(1 - ${policy.n_obs_steps}, 1)]"
     observation.state: "[i / ${fps} for i in range(1 - ${policy.n_obs_steps}, 1)]"
-    action: "[i / ${fps} for i in range(1 - ${policy.n_obs_steps}, 1 - ${policy.n_obs_steps} + ${policy.action_horizon})]"
+    action: "[i / ${fps} for i in range(1 - ${policy.n_obs_steps}, 1 - ${policy.n_obs_steps} + ${policy.action_chunk_size})]"
 
 
 eval:
@@ -97,16 +97,16 @@ policy:
 
   # full policy configurations.
   # HPT trunk config
-  embed_dim: 256
-  num_blocks: 16
-  num_heads: 8
+  embed_dim: 768
+  num_blocks: 32
+  num_heads: 16
   use_modality_embedding: False
   use_domain_embedding: False
   token_postprocessing: "mean"
   weight_init_style: 'pytorch'
   drop_path: 0.0
   no_trunk: False
-  load_pretrained: "" # load pre-trained model
+  load_pretrained: "xlarge" # load pre-trained model
   freeze_trunk: False
 
   # stem network (projectors) for different modalities
@@ -136,7 +136,7 @@ policy:
   state_num_of_copy: 1
 
   # head
-  action_horizon: 100
+  action_chunk_size: 100
   n_action_steps: 50
 
   # ACT Head
