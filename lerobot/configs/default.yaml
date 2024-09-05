@@ -29,6 +29,7 @@ seed: ???
 # datsets are provided.
 dataset_repo_id: lerobot/pusht
 video_backend: pyav
+dataset_data_ratio: 1
 
 training:
   offline_steps: ???

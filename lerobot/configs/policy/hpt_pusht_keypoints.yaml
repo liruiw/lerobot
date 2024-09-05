@@ -38,6 +38,7 @@ policy:
   name: hpt
   domain_name: "pusht_keypoints"
   head_architecture: "diffusion"
+  head_action_dim: "${env.action_dim}" # overwrite based on dataset
 
   # Input / output structure.
   input_shapes:

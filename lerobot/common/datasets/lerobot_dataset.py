@@ -49,6 +49,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
         image_transforms: Callable | None = None,
         delta_timestamps: dict[list[float]] | None = None,
         video_backend: str | None = None,
+        data_ratio: float = 1.0,
     ):
         super().__init__()
         self.repo_id = repo_id
@@ -56,6 +57,8 @@ class LeRobotDataset(torch.utils.data.Dataset):
         self.split = split
         self.image_transforms = image_transforms
         self.delta_timestamps = delta_timestamps
+        self.dataset_data_ratio = data_ratio
+
         # load data from hub or locally when root is provided
         # TODO(rcadene, aliberts): implement faster transfer
         # https://huggingface.co/docs/huggingface_hub/en/guides/download#faster-downloads
@@ -113,12 +116,12 @@ class LeRobotDataset(torch.utils.data.Dataset):
     @property
     def num_samples(self) -> int:
         """Number of samples/frames."""
-        return len(self.hf_dataset)
+        return int(len(self.hf_dataset) * self.dataset_data_ratio)
 
     @property
     def num_episodes(self) -> int:
         """Number of episodes."""
-        return len(self.hf_dataset.unique("episode_index"))
+        return int(len(self.hf_dataset.unique("episode_index")) * self.dataset_data_ratio)
 
     @property
     def tolerance_s(self) -> float:
@@ -130,7 +133,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
         return 1 / self.fps - 1e-4
 
     def __len__(self):
-        return self.num_samples
+        return int(self.num_samples * self.dataset_data_ratio)
 
     def __getitem__(self, idx):
         item = self.hf_dataset[idx]
