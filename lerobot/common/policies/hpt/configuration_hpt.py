@@ -223,6 +223,11 @@ class HPTConfig:
     clip_sample: bool = True
     clip_sample_range: float = 1.0
 
+    use_unet: bool = False
+    dit_embed_dim: int = 256
+    dit_num_blocks: int = 16
+    dit_num_heads: int = 8
+
     # Inference
     num_inference_steps: int | None = None
 

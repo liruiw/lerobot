@@ -476,13 +476,13 @@ class SimpleDiffusionTransformer(nn.Module):
     def __init__(self, config: HPTConfig, action_dim):
         super().__init__()
         self.model = SimpleTransformer(
-            embed_dim=config.embed_dim,
-            num_blocks=config.num_blocks,
+            embed_dim=config.dit_embed_dim,
+            num_blocks=config.dit_num_blocks,
             ffn_dropout_rate=0.0,
             attn_target=partial(
                 MultiheadAttention,
-                embed_dim=config.embed_dim,
-                num_heads=config.num_heads,
+                embed_dim=config.dit_embed_dim,
+                num_heads=config.dit_num_heads,
                 bias=True,
                 add_bias_kv=True,
             ),
@@ -493,10 +493,12 @@ class SimpleDiffusionTransformer(nn.Module):
             post_transformer_layer=EinOpsRearrange("l b d -> b l d"),
         )
         # add linear layer to map the input action to embedding and output to the action space
-        self.in_layer = nn.Linear(action_dim, config.embed_dim)
-        self.out_layer = nn.Linear(config.embed_dim, action_dim)
+        self.in_layer = nn.Linear(action_dim, config.dit_embed_dim)
+        self.out_layer = nn.Linear(config.dit_embed_dim, action_dim)
         self.time_step_mlp = nn.Sequential(
-            nn.Linear(1, config.embed_dim), nn.ReLU(), nn.Linear(config.embed_dim, config.embed_dim)
+            nn.Linear(1, config.dit_embed_dim),
+            nn.ReLU(),
+            nn.Linear(config.dit_embed_dim, config.dit_embed_dim),
         )
 
     def forward(self, x: Tensor, t: Tensor, global_cond: Tensor) -> Tensor:
@@ -513,11 +515,9 @@ class SimpleDiffusionTransformer(nn.Module):
 class DiffusionHead(nn.Module):
     """Diffusion based policy head based on the diffusion implementation"""
 
-    def __init__(
-        self, config, embed_dim: int, action_chunk_size: int, action_dim: int, u_net: bool = False
-    ) -> None:
+    def __init__(self, config, embed_dim: int, action_chunk_size: int, action_dim: int) -> None:
         super().__init__()
-        if u_net:
+        if config.use_unet:
             from ..diffusion.modeling_diffusion import DiffusionConditionalUnet1d
 
             self.model = DiffusionConditionalUnet1d(config=config, global_cond_dim=embed_dim)
