@@ -476,12 +476,12 @@ class SimpleDiffusionTransformer(nn.Module):
     def __init__(self, config: HPTConfig, action_dim):
         super().__init__()
         self.model = SimpleTransformer(
-            embed_dim=config.dit_embed_dim,
+            embed_dim=config.embed_dim,
             num_blocks=config.dit_num_blocks,
             ffn_dropout_rate=0.0,
             attn_target=partial(
                 MultiheadAttention,
-                embed_dim=config.dit_embed_dim,
+                embed_dim=config.embed_dim,
                 num_heads=config.dit_num_heads,
                 bias=True,
                 add_bias_kv=True,
