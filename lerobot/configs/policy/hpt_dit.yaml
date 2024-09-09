@@ -55,7 +55,7 @@ policy:
     observation.images.top: mean_std
     observation.state: mean_std
   output_normalization_modes:
-    action: mean_std
+    action: min_max
 
   # full policy configurations.
   # HPT trunk config
@@ -115,3 +115,4 @@ policy:
   dit_embed_dim: 256
   dit_num_blocks: 16
   dit_num_heads: 8
+  num_inference_steps: 50

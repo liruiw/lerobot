@@ -494,7 +494,7 @@ class SimpleDiffusionTransformer(nn.Module):
         )
         # add linear layer to map the input action to embedding and output to the action space
         self.in_layer = nn.Linear(action_dim, config.embed_dim)
-        self.out_layer = nn.Linear(config.embed_dim, action_dim)
+        self.out_layer = nn.Sequential(nn.Linear(config.embed_dim, action_dim), nn.Tanh())
         self.time_step_mlp = nn.Sequential(
             nn.Linear(1, config.embed_dim),
             nn.ReLU(),
