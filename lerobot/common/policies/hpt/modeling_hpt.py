@@ -493,12 +493,12 @@ class SimpleDiffusionTransformer(nn.Module):
             post_transformer_layer=EinOpsRearrange("l b d -> b l d"),
         )
         # add linear layer to map the input action to embedding and output to the action space
-        self.in_layer = nn.Linear(action_dim, config.dit_embed_dim)
-        self.out_layer = nn.Linear(config.dit_embed_dim, action_dim)
+        self.in_layer = nn.Linear(action_dim, config.embed_dim)
+        self.out_layer = nn.Linear(config.embed_dim, action_dim)
         self.time_step_mlp = nn.Sequential(
-            nn.Linear(1, config.dit_embed_dim),
+            nn.Linear(1, config.embed_dim),
             nn.ReLU(),
-            nn.Linear(config.dit_embed_dim, config.dit_embed_dim),
+            nn.Linear(config.embed_dim, config.embed_dim),
         )
 
     def forward(self, x: Tensor, t: Tensor, global_cond: Tensor) -> Tensor:
