@@ -61,7 +61,7 @@ policy:
   num_heads: 8
   use_modality_embedding: True
   use_domain_embedding: False
-  token_postprocessing: "mean"
+  token_postprocessing: "no-op"
   weight_init_style: 'pytorch'
   drop_path: 0.0
   no_trunk: False

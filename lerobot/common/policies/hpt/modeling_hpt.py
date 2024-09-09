@@ -27,6 +27,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F  # noqa: N812
 import torchvision
+from diffusers.schedulers.scheduling_ddim import DDIMScheduler
+from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 from einops import rearrange, repeat
 from huggingface_hub import PyTorchModelHubMixin
 from torch import Tensor, einsum, nn
@@ -238,27 +240,6 @@ class HPT(nn.Module):
         weight_init_style: str = "pytorch",
     ):
         """create the shared representation for pretraining"""
-
-        def instantiate_trunk(embed_dim, num_blocks, num_heads, pre_transformer_ln, add_bias_kv, drop_path):
-            return SimpleTransformer(
-                embed_dim=embed_dim,
-                num_blocks=num_blocks,
-                ffn_dropout_rate=0.0,
-                attn_target=partial(
-                    MultiheadAttention,
-                    embed_dim=embed_dim,
-                    num_heads=num_heads,
-                    bias=True,
-                    add_bias_kv=add_bias_kv,
-                ),
-                pre_transformer_layer=nn.Sequential(
-                    nn.LayerNorm(embed_dim, eps=1e-6) if pre_transformer_ln else nn.Identity(),
-                    EinOpsRearrange("b l d -> l b d"),
-                ),
-                post_transformer_layer=EinOpsRearrange("l b d -> b l d"),
-                weight_init_style=weight_init_style,
-            )
-
         trunk = {}
         trunk["trunk"] = instantiate_trunk(
             embed_dim=embed_dim,
@@ -455,14 +436,96 @@ class HPT(nn.Module):
         return loss
 
 
+def instantiate_trunk(
+    embed_dim, num_blocks, num_heads, pre_transformer_ln, add_bias_kv, drop_path, weight_init_style="pytorch"
+):
+    return SimpleTransformer(
+        embed_dim=embed_dim,
+        num_blocks=num_blocks,
+        ffn_dropout_rate=0.0,
+        attn_target=partial(
+            MultiheadAttention,
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            bias=True,
+            add_bias_kv=add_bias_kv,
+        ),
+        pre_transformer_layer=nn.Sequential(
+            nn.LayerNorm(embed_dim, eps=1e-6) if pre_transformer_ln else nn.Identity(),
+            EinOpsRearrange("b l d -> l b d"),
+        ),
+        post_transformer_layer=EinOpsRearrange("l b d -> b l d"),
+        weight_init_style=weight_init_style,
+    )
+
+
+def _make_noise_scheduler(name: str, **kwargs: dict) -> DDPMScheduler | DDIMScheduler:
+    """
+    Factory for noise scheduler instances of the requested type. All kwargs are passed
+    to the scheduler.
+    """
+    if name == "DDPM":
+        return DDPMScheduler(**kwargs)
+    elif name == "DDIM":
+        return DDIMScheduler(**kwargs)
+    else:
+        raise ValueError(f"Unsupported noise scheduler type {name}")
+
+
+class SimpleDiffusionTransformer(nn.Module):
+    def __init__(self, config: HPTConfig, action_dim):
+        super().__init__()
+        self.model = SimpleTransformer(
+            embed_dim=config.embed_dim,
+            num_blocks=config.num_blocks,
+            ffn_dropout_rate=0.0,
+            attn_target=partial(
+                MultiheadAttention,
+                embed_dim=config.embed_dim,
+                num_heads=config.num_heads,
+                bias=True,
+                add_bias_kv=True,
+            ),
+            pre_transformer_layer=nn.Sequential(
+                nn.Identity(),
+                EinOpsRearrange("b l d -> l b d"),
+            ),
+            post_transformer_layer=EinOpsRearrange("l b d -> b l d"),
+        )
+        # add linear layer to map the input action to embedding and output to the action space
+        self.in_layer = nn.Linear(action_dim, config.embed_dim)
+        self.out_layer = nn.Linear(config.embed_dim, action_dim)
+        self.time_step_mlp = nn.Sequential(
+            nn.Linear(1, config.embed_dim), nn.ReLU(), nn.Linear(config.embed_dim, config.embed_dim)
+        )
+
+    def forward(self, x: Tensor, t: Tensor, global_cond: Tensor) -> Tensor:
+        x = self.in_layer(x)
+        t = self.time_step_mlp(t.unsqueeze(1).float()).unsqueeze(1)
+        if len(global_cond.shape) == 2:
+            global_cond = global_cond.unsqueeze(1)
+        global_cond = torch.cat((global_cond, t), dim=1)
+        x = self.model(x, context=global_cond)
+        x = self.out_layer(x)
+        return x
+
+
 class DiffusionHead(nn.Module):
     """Diffusion based policy head based on the diffusion implementation"""
 
-    def __init__(self, config, embed_dim: int, action_chunk_size: int, action_dim: int) -> None:
+    def __init__(
+        self, config, embed_dim: int, action_chunk_size: int, action_dim: int, u_net: bool = False
+    ) -> None:
         super().__init__()
-        from ..diffusion.modeling_diffusion import DiffusionConditionalUnet1d, _make_noise_scheduler
+        if u_net:
+            from ..diffusion.modeling_diffusion import DiffusionConditionalUnet1d
 
-        self.model = DiffusionConditionalUnet1d(config=config, global_cond_dim=embed_dim)
+            self.model = DiffusionConditionalUnet1d(config=config, global_cond_dim=embed_dim)
+
+        else:
+            # general bidirectional transformer model for diffusion
+            self.model = SimpleDiffusionTransformer(config, action_dim)
+
         self.action_chunk_size = action_chunk_size
         self.action_dim = action_dim
         self.noise_scheduler = _make_noise_scheduler(
@@ -787,14 +850,16 @@ class BlockWithMasking(nn.Module):
         )
         self.norm_2 = norm_layer(dim)
 
-    def forward(self, x: Tensor, attn_mask: Tensor) -> Tensor:
-        x = x + self.attn(self.norm_1(x), attn_mask)
+    def forward(self, x: Tensor, attn_mask: Tensor, context: Tensor = None) -> Tensor:
+        x = x + self.attn(self.norm_1(x), attn_mask, context)
         x = x + self.mlp(self.norm_2(x))
         return x
 
 
 class MultiheadAttention(nn.MultiheadAttention):
-    def forward(self, x: Tensor, attn_mask: Tensor) -> Tensor:
+    def forward(self, x: Tensor, attn_mask: Tensor, context: Tensor = None) -> Tensor:
+        if context is not None:
+            return super().forward(x, context, context, need_weights=False, attn_mask=attn_mask)[0]
         return super().forward(x, x, x, need_weights=False, attn_mask=attn_mask)[0]
 
 
@@ -838,7 +903,9 @@ class SimpleTransformer(nn.Module):
         self.weight_init_style = weight_init_style
         self.apply(self._init_weights)
 
-    def forward(self, tokens: Tensor, attn_mask: Optional[Tensor] = None) -> Tensor:
+    def forward(
+        self, tokens: Tensor, attn_mask: Optional[Tensor] = None, context: Optional[Tensor] = None
+    ) -> Tensor:
         """
         Inputs
         - tokens: data of shape N x L x D (or L x N x D depending on the attention implementation)
@@ -849,8 +916,11 @@ class SimpleTransformer(nn.Module):
         """
         if self.pre_transformer_layer:
             tokens = self.pre_transformer_layer(tokens)
+            if context is not None:
+                context = self.pre_transformer_layer(context)
+
         for _, blk in enumerate(self.blocks):
-            tokens = blk(tokens, attn_mask=attn_mask)
+            tokens = blk(tokens, attn_mask=attn_mask, context=context)
         if self.post_transformer_layer:
             tokens = self.post_transformer_layer(tokens)
         return tokens

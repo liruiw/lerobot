@@ -51,6 +51,8 @@
 
 🤗 LeRobot hosts pretrained models and datasets on this Hugging Face community page: [huggingface.co/lerobot](https://huggingface.co/lerobot)
 
+## Note: Run HPT under the hpt_squash branch.
+
 #### Examples of pretrained models on simulation environments
 
 <table>
