@@ -296,17 +296,9 @@ class HPT(nn.Module):
         Shared modality layers and add modality tokens. Add positional and time embeddings.
         """
         tokens = torch.cat(features, dim=-2)
-        position_tokens = self.get_position_embedding(tokens)
+        position_tokens = get_position_embedding(tokens)
         tokens = tokens + position_tokens
         return tokens
-
-    def get_position_embedding(self, feature: Tensor) -> Tensor:
-        """
-        Add positional embedding to the features
-        """
-        pos_embedding = get_sinusoid_encoding_table(0, feature.shape[1], self.embed_dim)
-        pos_embedding = pos_embedding.repeat((1, 1, 1)).to(feature.device)
-        return pos_embedding
 
     def postprocess_tokens(self, trunk_tokens: Tensor) -> Tensor:
         """
@@ -472,6 +464,16 @@ def _make_noise_scheduler(name: str, **kwargs: dict) -> DDPMScheduler | DDIMSche
         raise ValueError(f"Unsupported noise scheduler type {name}")
 
 
+def get_position_embedding(feature: Tensor) -> Tensor:
+    """
+    Add positional embedding to the features.
+    :param features: (N, L, D) tensor
+    """
+    pos_embedding = get_sinusoid_encoding_table(0, feature.shape[1], feature.shape[2])
+    pos_embedding = pos_embedding.repeat((1, 1, 1)).to(feature.device)
+    return pos_embedding
+
+
 class SimpleDiffusionTransformer(nn.Module):
     def __init__(self, config: HPTConfig, action_dim):
         super().__init__()
@@ -494,7 +496,7 @@ class SimpleDiffusionTransformer(nn.Module):
         )
         # add linear layer to map the input action to embedding and output to the action space
         self.in_layer = nn.Linear(action_dim, config.embed_dim)
-        self.out_layer = nn.Sequential(nn.Linear(config.embed_dim, action_dim), nn.Tanh())
+        self.out_layer = nn.Sequential(nn.Linear(config.embed_dim, action_dim))
         self.time_step_mlp = nn.Sequential(
             nn.Linear(1, config.embed_dim),
             nn.ReLU(),
@@ -503,10 +505,15 @@ class SimpleDiffusionTransformer(nn.Module):
 
     def forward(self, x: Tensor, t: Tensor, global_cond: Tensor) -> Tensor:
         x = self.in_layer(x)
+        x = x + get_position_embedding(x)
+
+        # position encoding
         t = self.time_step_mlp(t.unsqueeze(1).float()).unsqueeze(1)
         if len(global_cond.shape) == 2:
             global_cond = global_cond.unsqueeze(1)
         global_cond = torch.cat((global_cond, t), dim=1)
+        # position encoding
+        global_cond = global_cond + get_position_embedding(global_cond)
         x = self.model(x, context=global_cond)
         x = self.out_layer(x)
         return x
