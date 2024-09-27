@@ -17,43 +17,16 @@ This is a Huggingface LeRobot implementation for pre-training Heterogenous Pre-t
 
 ## LeRobot Installation
 
-Download our source code:
-```bash
-git clone https://github.com/huggingface/lerobot.git
-cd lerobot
-```
-
 Create a virtual environment with Python 3.10 and activate it, e.g. with [`miniconda`](https://docs.anaconda.com/free/miniconda/index.html):
 ```bash
 conda create -y -n lerobot python=3.10
 conda activate lerobot
 ```
 
-Install 🤗 LeRobot:
+Install 🤗 LeRobot with simulation environments:
 ```bash
-pip install -e .
+pip install -e ".[aloha, pusht]
 ```
-
-> **NOTE:** Depending on your platform, If you encounter any build errors during this step
-you may need to install `cmake` and `build-essential` for building some of our dependencies.
-On linux: `sudo apt-get install cmake build-essential`
-
-For simulations, 🤗 LeRobot comes with gymnasium environments that can be installed as extras:
-- [aloha](https://github.com/huggingface/gym-aloha)
-- [xarm](https://github.com/huggingface/gym-xarm)
-- [pusht](https://github.com/huggingface/gym-pusht)
-
-For instance, to install 🤗 LeRobot with aloha and pusht, use:
-```bash
-pip install -e ".[aloha, pusht]"
-```
-
-To use [Weights and Biases](https://docs.wandb.ai/quickstart) for experiment tracking, log in with
-```bash
-wandb login
-```
-
-(note: you will also need to enable WandB in the configuration. See below.)
 
 ## Code Modification Walkthrough
 
@@ -76,7 +49,7 @@ Check the following two folders for most of the modifications.
 1. Run the following scripts for aloha transfer cube experiments.
 
 <details>
-  <summary><span style="font-weight: bold;">Metaworld 20 Task Experiments</span></summary>
+  <summary><span style="font-weight: bold;">Aloha Experiments</span></summary>
 
 ```
 python lerobot/scripts/train.py \
@@ -90,7 +63,7 @@ wandb.enable=true
 2. Run the following scripts for push-T experiments.
 
 <details>
-  <summary><span style="font-weight: bold;">Metaworld 20 Task Experiments</span></summary>
+  <summary><span style="font-weight: bold;">PushT experiments</span></summary>
 
 ```
 python lerobot/scripts/train.py \
@@ -104,7 +77,7 @@ wandb.enable=true
 3. Run the following scripts for real-world Koch experiments.
 
 <details>
-  <summary><span style="font-weight: bold;">Metaworld 20 Task Experiments</span></summary>
+  <summary><span style="font-weight: bold;">Koch Experiments</span></summary>
 
 ```
 python lerobot/scripts/train.py policy=hpt_koch_real env=koch_real \
